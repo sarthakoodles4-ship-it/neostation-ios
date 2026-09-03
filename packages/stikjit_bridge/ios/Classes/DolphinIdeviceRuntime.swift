@@ -230,6 +230,7 @@ final class DolphinIdeviceRuntime {
 
   func launchDolphinSuspended(
     preferredBundleId: String,
+    gameRelativePath: String,
     pairingFilePath: String,
     deviceAddress: String,
     rsdPort: UInt16
@@ -315,19 +316,28 @@ final class DolphinIdeviceRuntime {
     }
     defer { processFree(processControl) }
 
+    // Pass the selected ROM before the target is resumed. Unlike a URL opened
+    // from NeoStation after SpringBoard has foregrounded Dolphin, argv delivery
+    // does not depend on NeoStation still being the active application.
+    let gameArgument = "--neostation-game=\(gameRelativePath)"
     var pid: UInt64 = 0
     let launchError = resolvedBundleId.withCString { bundleIdCString in
-      launchApp(
-        processControl,
-        bundleIdCString,
-        nil,
-        0,
-        nil,
-        0,
-        true,
-        false,
-        &pid
-      )
+      gameArgument.withCString { gameArgumentCString in
+        var arguments: [UnsafePointer<CChar>?] = [gameArgumentCString]
+        return arguments.withUnsafeBufferPointer { buffer in
+          launchApp(
+            processControl,
+            bundleIdCString,
+            nil,
+            0,
+            buffer.baseAddress,
+            UInt(buffer.count),
+            true,
+            true,
+            &pid
+          )
+        }
+      }
     }
     try check(
       launchError,
