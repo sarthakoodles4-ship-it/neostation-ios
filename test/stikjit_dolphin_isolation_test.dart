@@ -159,7 +159,7 @@ void main() {
     final config = File('lib/services/config_service.dart').readAsStringSync();
     expect(config, contains('linkedDolphinFolderPath'));
     expect(config, contains('linkedDolphinSoftwareFolderPath'));
-    expect(config, isNot(contains('dolphinNeoSyncBookmarkKey'));
+    expect(config, isNot(contains('dolphinNeoSyncBookmarkKey')));
 
     final resolver = File(
       'lib/providers/neosync/neosync_path_resolver.dart',
