@@ -2,7 +2,9 @@
 """Patch pinned DolphiniOS source with NeoStation's direct-game receiver.
 
 The companion build intentionally changes only three existing upstream files:
-- Info.plist: register the private `dolphinios-neostation` URL scheme.
+- Info.plist: register the private `dolphinios-neostation` URL scheme and give
+  the companion an explicit display name so JIT discovery cannot confuse it
+  with a stock DolphiniOS install.
 - MainDisplaySceneDelegate.swift: receive cold/warm scene URLs and persist a
   validated path relative to DolphiniOS/Documents/Software.
 - SoftwareListViewController.mm: resolve that relative path and boot it through
@@ -20,6 +22,7 @@ from pathlib import Path
 SCHEME = "dolphinios-neostation"
 PENDING_KEY = "NeoStationPendingGameRelativePath"
 NOTIFICATION = "NeoStationDolphinLaunch"
+DISPLAY_NAME = "DolphiniOS NeoStation"
 
 
 def fail(message: str) -> None:
@@ -36,6 +39,8 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 def patch_info_plist(path: Path) -> None:
     with path.open("rb") as handle:
         data = plistlib.load(handle)
+
+    data["CFBundleDisplayName"] = DISPLAY_NAME
 
     url_types = list(data.get("CFBundleURLTypes", []))
     found = False
@@ -375,6 +380,7 @@ def main() -> None:
     patch_software_list(software)
 
     print("Patched DolphiniOS for NeoStation direct launch")
+    print(f"  Display name: {DISPLAY_NAME}")
     print(f"  URL scheme: {SCHEME}")
     print("  Receiver: scene cold/warm URL contexts")
     print("  Boot target: Documents/Software/<validated relative path>")
