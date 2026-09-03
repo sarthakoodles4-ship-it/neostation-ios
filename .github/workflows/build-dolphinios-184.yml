@@ -1,4 +1,4 @@
-name: Build DolphiniOS 184
+name: Build DolphiniOS 185 Direct Launch
 
 on:
   push:
@@ -6,6 +6,9 @@ on:
       - feature/dolphinios-stikjit-neosync
     paths:
       - '.github/workflows/build-dolphinios-184.yml'
+      - 'lib/services/game/game_session_manager.dart'
+      - 'lib/services/stikjit_dolphin_service.dart'
+      - 'packages/stikjit_bridge/lib/stikjit_bridge.dart'
       - 'packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift'
       - 'packages/stikjit_bridge/ios/Classes/DolphinLegacyScript.swift'
       - 'test/stikjit_dolphin_isolation_test.dart'
@@ -14,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: neostation-dolphinios-184
+  group: neostation-dolphinios-direct-launch
   cancel-in-progress: true
 
 jobs:
@@ -22,8 +25,8 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     env:
-      BUILD_NUMBER: '184'
-      ARTIFACT_BASENAME: NeoStation-iOS-Build-184-DolphiniOS-PID-Recovery
+      BUILD_NUMBER: '185'
+      ARTIFACT_BASENAME: NeoStation-iOS-Build-185-DolphiniOS-Direct-Launch
       SCREENSCRAPER_DEV_ID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
       SCREENSCRAPER_DEV_PASSWORD: ${{ secrets.SCREENSCRAPER_DEV_PASSWORD }}
 
@@ -45,15 +48,19 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Verify Dolphin PID-recovery architecture
+      - name: Verify Dolphin direct-launch architecture
         shell: bash
         run: |
           set -euo pipefail
           test "$(git branch --show-current)" = "feature/dolphinios-stikjit-neosync"
           DOLPHIN=packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift
           SCRIPT=packages/stikjit_bridge/ios/Classes/DolphinLegacyScript.swift
+          SERVICE=lib/services/stikjit_dolphin_service.dart
+          DART_BRIDGE=packages/stikjit_bridge/lib/stikjit_bridge.dart
           test -f "$DOLPHIN"
           test -f "$SCRIPT"
+          test -f "$SERVICE"
+          test -f "$DART_BRIDGE"
           grep -q 'script: .custom(dolphinLegacyScript)' "$DOLPHIN"
           grep -q 'DolphinLegacyScript.install' "$DOLPHIN"
           grep -q 'legacy.\\(launch.pid)' "$DOLPHIN"
@@ -68,11 +75,17 @@ jobs:
           grep -q 'DolphinAttachGate' "$DOLPHIN"
           grep -q 'attachGate.wait(timeout: 20)' "$DOLPHIN"
           grep -q 'stikjit_dolphin_native_debug.txt' "$DOLPHIN"
+          grep -q 'dolphinios-neostation' "$DOLPHIN"
+          grep -q 'gameRelativePath' "$DOLPHIN"
+          grep -q 'gameUrlOpened' "$DOLPHIN"
+          grep -q 'STATE: DOLPHIN_GAME_URL_OPENED' "$DOLPHIN"
+          grep -q 'gameRelativePath' "$DART_BRIDGE"
+          grep -q 'GameSessionManager.currentGame' "$SERVICE"
+          grep -q 'DolphinIosFolderService.ownsRomPath' "$SERVICE"
           grep -q 'script: .universal' packages/stikjit_bridge/ios/Classes/StikjitBridgePlugin.swift
           grep -q 'script: .universal' packages/stikjit_bridge/ios/Classes/NeoStationStikjitBridgePlugin.swift
           grep -q 'script: .universal' packages/stikjit_bridge/ios/Classes/StikjitRpcs3BridgePlugin.swift
           test -f lib/services/dolphin_ios_folder_service.dart
-          test -f lib/services/stikjit_dolphin_service.dart
           test ! -e lib/services/manic_emu_launch_service.dart
 
       - name: Prepare build-time defines
@@ -182,6 +195,7 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes:2 string armsx2' "$PLIST"
           /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes:3 string melonx' "$PLIST"
           /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes:4 string neomelonx' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes:5 string dolphinios-neostation' "$PLIST"
           plutil -lint "$PLIST"
 
       - name: Generate app icon
@@ -206,7 +220,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          STAGING=/tmp/neostation-dolphin-184
+          STAGING=/tmp/neostation-dolphin-185
           rm -rf "$STAGING"
           mkdir -p "$STAGING/Payload"
           cp -R build/ios/iphoneos/Runner.app "$STAGING/Payload/Runner.app"
