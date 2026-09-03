@@ -11,7 +11,7 @@ import '../game_session_persistence.dart';
 /// Owns the game-session lifecycle and its mutable tracking state.
 ///
 /// Single owner of the launch/session flags, the current-game metadata, the
-/// return/exit callbacks, and the playtime timer. Registers a session on
+/// return/exit callbacks, and the playtime timer. Registers each session on
 /// launch, persists playtime incrementally, and finalizes it on teardown, plus
 /// recovery of a session interrupted by an OS kill. Extracted verbatim from
 /// [GameService], which now delegates its session API here and calls
@@ -55,9 +55,11 @@ class GameSessionManager {
 
   /// Metadata for the system associated with the current game.
   static SystemModel? _currentGameSystem;
+  static SystemModel? get currentGameSystem => _currentGameSystem;
 
   /// Metadata for the currently active game.
   static GameModel? _currentGame;
+  static GameModel? get currentGame => _currentGame;
 
   /// Callback triggered when a game session terminates on Android.
   static Function(int)? _onGameReturnedCallback;
