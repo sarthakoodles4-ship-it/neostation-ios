@@ -3,7 +3,7 @@ import Foundation
 import StikJIT
 import UIKit
 
-/// Independent StikJIT path for official DolphiniOS.
+/// Independent StikJIT path for the NeoStation-compatible DolphiniOS build.
 ///
 /// DolphiniOS uses StikJIT's legacy `brk #0x69` handshake on TXM devices. The
 /// handshake itself must remain alive until emulation starts, but NeoStation
@@ -11,12 +11,11 @@ import UIKit
 ///
 /// The guarded legacy script terminates when debugserver reports Wxx/Xxx or a
 /// disconnected socket, so a dead target cannot keep the JIT worker occupied
-/// forever. Each PID also gets its own queue so a later DolphiniOS process can
-/// be attached independently. Once vAttach is confirmed, NeoStation opens the
-/// companion DolphiniOS direct-launch receiver while the JIT session is armed.
+/// forever. Each PID gets its own queue. The selected game is injected into the
+/// suspended process argv before JIT attachment, avoiding any dependency on
+/// NeoStation remaining foregrounded after SpringBoard resumes DolphiniOS.
 public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
   private static let channelName = "neostation/stikjit_dolphin"
-  private static let directLaunchScheme = "dolphinios-neostation"
   private static let launchQueue = DispatchQueue(
     label: "com.neogamelab.neostation.stikjit.dolphin.launch",
     qos: .userInitiated
@@ -168,6 +167,7 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
     let runtime = try DolphinIdeviceRuntime()
     let launch = try runtime.launchDolphinSuspended(
       preferredBundleId: bundleIdHint,
+      gameRelativePath: gameRelativePath,
       pairingFilePath: pairingFile.path,
       deviceAddress: configuration.deviceAddress,
       rsdPort: configuration.rsdPort
@@ -175,6 +175,7 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
 
     preparationLogs.append("Detected DolphiniOS bundle ID: \(launch.bundleId).")
     preparationLogs.append("DolphiniOS launched suspended with PID \(launch.pid).")
+    preparationLogs.append("STATE: DOLPHIN_GAME_ARGUMENT_QUEUED")
 
     let expectsLegacyBreakpoint = securityState.isTXMPresent != false
     let attachGate = DolphinAttachGate()
@@ -184,6 +185,7 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
       "PID: \(launch.pid)",
       "Bundle ID: \(launch.bundleId)",
       "TXM: \(String(describing: securityState.isTXMPresent))",
+      "STATE: DOLPHIN_GAME_ARGUMENT_QUEUED",
       "Game: \(gameRelativePath)",
     ])
 
@@ -251,8 +253,6 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
           }
         )
 
-        // A non-TXM session can complete before the progress callback wakes the
-        // launch queue, so this is an additional safe completion signal.
         if !expectsLegacyBreakpoint {
           attachGate.markAttached("NO_TXM_ATTACH_COMPLETE")
         }
@@ -277,10 +277,9 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
       backgroundTask.end()
     }
 
-    // Do not tell Flutter that Dolphin is ready merely because its process was
-    // launched. Wait until the patched legacy script has actually completed
-    // vAttach. We deliberately do NOT wait for brk #0x69, because that only
-    // happens after emulation starts.
+    // Wait only for real debugger attachment. Once `c` resumes the companion,
+    // main.m has already captured the selected-game argv and its software list
+    // can boot that game, which in turn reaches the brk #0x69 JIT handshake.
     let attachState = attachGate.wait(timeout: 20)
     if let failure = attachState.failure {
       throw DolphinBridgeError.debuggerAttachFailed(failure)
@@ -289,17 +288,9 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
       throw DolphinBridgeError.debuggerAttachTimeout
     }
 
-    // The script logs attach_response immediately before issuing `c`. Give its
-    // callback a tiny grace period to enter that blocking continue command, so
-    // debugserver is already waiting for brk #0x69 before the receiver boots
-    // the selected game.
     if expectsLegacyBreakpoint {
       Thread.sleep(forTimeInterval: 0.20)
     }
-
-    let gameUrlOpened = Self.openGameInDolphin(
-      relativePath: gameRelativePath
-    )
 
     var armedLogs = preparationLogs
     armedLogs.append("STATE: DOLPHIN_DEBUGGER_ATTACHED")
@@ -310,11 +301,7 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
         ? "Patched legacy script is attached and waiting for DolphiniOS brk #0x69."
         : "Debugger attach/detach completed on this non-TXM device."
     )
-    armedLogs.append(
-      gameUrlOpened
-        ? "STATE: DOLPHIN_GAME_URL_OPENED"
-        : "STATE: DOLPHIN_GAME_URL_FAILED"
-    )
+    armedLogs.append("STATE: DOLPHIN_GAME_HANDOFF_READY")
     armedLogs.append("Game: \(gameRelativePath)")
     Self.appendNativeDiagnostic(armedLogs)
 
@@ -322,56 +309,13 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
       "pid": Int(launch.pid),
       "bundleId": launch.bundleId,
       "jitPending": expectsLegacyBreakpoint,
-      "gameUrlOpened": gameUrlOpened,
+      "gameHandoffReady": true,
       "logs": armedLogs,
     ]
     if let txmPresent = securityState.isTXMPresent {
       response["txmPresent"] = txmPresent
     }
     return response
-  }
-
-  private static func openGameInDolphin(relativePath: String) -> Bool {
-    var components = URLComponents()
-    components.scheme = directLaunchScheme
-    components.host = "launch"
-    components.queryItems = [
-      URLQueryItem(name: "path", value: relativePath),
-    ]
-
-    guard let url = components.url else {
-      appendNativeDiagnostic([
-        "STATE: DOLPHIN_GAME_URL_INVALID",
-        "Game: \(relativePath)",
-      ])
-      return false
-    }
-
-    let semaphore = DispatchSemaphore(value: 0)
-    let state = DolphinUrlOpenState()
-
-    DispatchQueue.main.async {
-      UIApplication.shared.open(url, options: [:]) { success in
-        state.value = success
-        semaphore.signal()
-      }
-    }
-
-    if semaphore.wait(timeout: .now() + 5) == .timedOut {
-      appendNativeDiagnostic([
-        "STATE: DOLPHIN_GAME_URL_TIMEOUT",
-        "Game: \(relativePath)",
-      ])
-      return false
-    }
-
-    appendNativeDiagnostic([
-      state.value
-        ? "STATE: DOLPHIN_GAME_URL_OPENED"
-        : "STATE: DOLPHIN_GAME_URL_FAILED",
-      "Game: \(relativePath)",
-    ])
-    return state.value
   }
 
   private static func appendNativeDiagnostic(_ lines: [String]) {
@@ -423,10 +367,6 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
       return "StikJIT reported an unknown preparation stage."
     }
   }
-}
-
-private final class DolphinUrlOpenState {
-  var value = false
 }
 
 private final class DolphinAttachGate {
