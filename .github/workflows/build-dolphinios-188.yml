@@ -1,0 +1,282 @@
+name: Build DolphiniOS 188 CoreDevice SpringBoard
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/dolphinios-stikjit-neosync
+    paths:
+      - '.github/workflows/build-dolphinios-188.yml'
+      - 'build-utils/patch_dolphin_official_launchservices_probe.py'
+      - 'build-utils/patch_dolphin_coredevice_handoff.py'
+      - 'build-utils/patch_idevice_coredevice_payload_url.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neostation-dolphinios-coredevice-188
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      BUILD_NUMBER: '188'
+      ARTIFACT_BASENAME: NeoStation-iOS-Build-188-DolphiniOS-CoreDevice
+      STIKJIT_COMMIT: '3623e725876f76aecb0520582ad6194bacb15d39'
+      IDEVICE_COMMIT: 'e98264c4194e6980173c576ac79a58adce95492b'
+      SCREENSCRAPER_DEV_ID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
+      SCREENSCRAPER_DEV_PASSWORD: ${{ secrets.SCREENSCRAPER_DEV_PASSWORD }}
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/dolphinios-stikjit-neosync
+          fetch-depth: 1
+
+      - name: Select Xcode 16.4
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+
+      - name: Set up Flutter stable
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Apply official DolphiniOS CoreDevice handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build-utils/patch_dolphin_official_launchservices_probe.py
+          python3 build-utils/patch_dolphin_coredevice_handoff.py
+
+          DOLPHIN=packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift
+          RUNTIME=packages/stikjit_bridge/ios/Classes/DolphinIdeviceRuntime.swift
+          SERVICE=lib/services/stikjit_dolphin_service.dart
+          DART_BRIDGE=packages/stikjit_bridge/lib/stikjit_bridge.dart
+          SCRIPT=packages/stikjit_bridge/ios/Classes/DolphinLegacyScript.swift
+
+          test ! -e packages/stikjit_bridge/ios/Classes/DolphinOfficialFileLauncher.swift
+          grep -q 'openDolphinGameThroughSpringBoard' "$RUNTIME"
+          grep -q 'app_service_connect_rsd' "$RUNTIME"
+          grep -q 'app_service_open_url' "$RUNTIME"
+          grep -q 'STATE: DOLPHIN_COREDEVICE_PAYLOAD_REQUESTED' "$DOLPHIN"
+          grep -q 'STATE: DOLPHIN_COREDEVICE_PAYLOAD_ACCEPTED' "$DOLPHIN"
+          grep -q 'CoreDevice/SpringBoard payloadURL' "$DOLPHIN"
+          ! grep -q 'DolphinOfficialFileLauncher' "$DOLPHIN"
+          ! grep -q -- '--neostation-game=' "$RUNTIME"
+          grep -q 'nameLower.contains("neostation")' "$RUNTIME"
+          grep -q 'Handoff: CoreDevice/SpringBoard payloadURL' "$SERVICE"
+          grep -q "'gamePath': gamePath" "$DART_BRIDGE"
+
+          # Preserve the validated JIT handshake and unrelated emulators.
+          grep -q 'script: .custom(dolphinLegacyScript)' "$DOLPHIN"
+          grep -q 'DolphinLegacyScript.install' "$DOLPHIN"
+          grep -q 'STATE: DOLPHIN_JIT_TARGET_TERMINATED' "$DOLPHIN"
+          grep -q 'STATE: DOLPHIN_JIT_READY' "$DOLPHIN"
+          grep -q 'NEOSTATION_DOLPHIN_JIT_READY' "$SCRIPT"
+          grep -q 'script: .universal' packages/stikjit_bridge/ios/Classes/StikjitBridgePlugin.swift
+          grep -q 'script: .universal' packages/stikjit_bridge/ios/Classes/NeoStationStikjitBridgePlugin.swift
+          grep -q 'script: .universal' packages/stikjit_bridge/ios/Classes/StikjitRpcs3BridgePlugin.swift
+
+      - name: Prepare build-time defines
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          required = ('SCREENSCRAPER_DEV_ID', 'SCREENSCRAPER_DEV_PASSWORD')
+          values = {name: os.environ.get(name, '') for name in required}
+          missing = [name for name, value in values.items() if not value]
+          if missing:
+              raise SystemExit('Missing GitHub Actions secrets: ' + ', '.join(missing))
+          values.update({
+              'NEOSTATION_EXPERIMENTAL_STIKJIT_MELONX': 'true',
+              'NEOSTATION_MELONX_BUNDLE_ID': 'com.nur.nx',
+              'NEOSTATION_EXPERIMENTAL_STIKJIT_ARMSX2': 'true',
+              'NEOSTATION_ARMSX2_BUNDLE_ID': 'com.armsx2.ios',
+              'NEOSTATION_EXPERIMENTAL_STIKJIT_RPCS3': 'true',
+              'NEOSTATION_RPCS3_BUNDLE_ID': 'com.xitrix.RPCS3',
+              'NEOSTATION_EXPERIMENTAL_STIKJIT_DOLPHIN': 'true',
+              'NEOSTATION_DOLPHIN_BUNDLE_ID': 'me.oatmealdome.DolphiniOS-njb',
+          })
+          Path('.dart-defines.json').write_text(json.dumps(values), encoding='utf-8')
+          PY
+
+      - name: Build StikJIT with CoreDevice payloadURL support
+        shell: bash
+        run: |
+          set -euo pipefail
+          STIK=/tmp/neostation-stikjit-188
+          IDEVICE=/tmp/neostation-idevice-188
+          DEST="$GITHUB_WORKSPACE/packages/stikjit_bridge/ios/Frameworks"
+          rm -rf "$STIK" "$IDEVICE" "$DEST/StikJIT.xcframework"
+          mkdir -p "$DEST"
+
+          git clone --filter=blob:none https://github.com/StikDebug/StikJIT.git "$STIK"
+          git -C "$STIK" checkout "$STIKJIT_COMMIT"
+          git clone --filter=blob:none https://github.com/jkcoxson/idevice.git "$IDEVICE"
+          git -C "$IDEVICE" checkout "$IDEVICE_COMMIT"
+
+          python3 "$GITHUB_WORKSPACE/build-utils/patch_idevice_coredevice_payload_url.py" "$IDEVICE"
+          grep -q 'open_url_through_springboard' "$IDEVICE/idevice/src/services/core_device/app_service.rs"
+          grep -q 'app_service_open_url' "$IDEVICE/ffi/src/core_device/app_service.rs"
+
+          rustup target add aarch64-apple-ios
+          pushd "$IDEVICE/ffi"
+          BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path)" \
+            IPHONEOS_DEPLOYMENT_TARGET=17.4 \
+            cargo build --release --target aarch64-apple-ios --features obfuscate
+          popd
+
+          test -s "$IDEVICE/target/aarch64-apple-ios/release/libidevice_ffi.a"
+          cp "$IDEVICE/target/aarch64-apple-ios/release/libidevice_ffi.a" \
+             "$STIK/idevice/libidevice_ffi.a"
+
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          pushd "$STIK"
+          xcodegen generate
+          xcodebuild archive \
+            -project StikJIT.xcodeproj \
+            -scheme StikJIT \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/StikJIT-iOS \
+            SKIP_INSTALL=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+            CODE_SIGNING_ALLOWED=NO
+          xcodebuild -create-xcframework \
+            -framework build/StikJIT-iOS.xcarchive/Products/Library/Frameworks/StikJIT.framework \
+            -output StikJIT.xcframework
+          popd
+
+          cp -R "$STIK/StikJIT.xcframework" "$DEST/StikJIT.xcframework"
+          FRAMEWORK_BIN="$DEST/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT"
+          test -f "$FRAMEWORK_BIN"
+          nm -gU "$FRAMEWORK_BIN" | grep -q '_app_service_open_url$'
+          echo 'Custom StikJIT contains app_service_open_url'
+
+      - name: Analyze and run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          flutter analyze --no-fatal-infos
+          flutter test
+
+      - name: Generate clean iOS scaffold
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ios
+          flutter create --platforms=ios --org com.neogamelab --project-name neostation .
+          test -f ios/Runner.xcodeproj/project.pbxproj
+          test -f ios/Runner/Info.plist
+          test -f ios/Podfile
+
+      - name: Configure iOS runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f build-utils/patch_ios_video_player_audio_session.py ]; then
+            python3 build-utils/patch_ios_video_player_audio_session.py
+          fi
+          DEVICE_INFO_FILE=$(find "$HOME/.pub-cache" -path '*device_info_plus*/FPPDeviceInfoPlusPlugin.m' 2>/dev/null | head -1 || true)
+          if [ -n "$DEVICE_INFO_FILE" ]; then sed -i '' '/isiOSAppOnVision/d' "$DEVICE_INFO_FILE"; fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          podfile = Path('ios/Podfile')
+          text = podfile.read_text(encoding='utf-8')
+          pattern = re.compile(r"(?m)^\s*#?\s*platform\s+:ios\s*,\s*['\"][^'\"]+['\"]\s*$")
+          podfile.write_text(pattern.sub("platform :ios, '18.0'", text, count=1) if pattern.search(text) else "platform :ios, '18.0'\n\n" + text, encoding='utf-8')
+          project = Path('ios/Runner.xcodeproj/project.pbxproj')
+          value = project.read_text(encoding='utf-8')
+          value, count = re.subn(r'IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;', 'IPHONEOS_DEPLOYMENT_TARGET = 18.0;', value)
+          if count == 0: raise SystemExit('No deployment target')
+          project.write_text(value, encoding='utf-8')
+          PY
+          PLIST=ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c 'Delete :UISupportedInterfaceOrientations' "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :UISupportedInterfaceOrientations array' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationLandscapeLeft' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :UISupportedInterfaceOrientations:1 string UIInterfaceOrientationLandscapeRight' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Delete :UISupportedInterfaceOrientations~ipad' "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :UISupportedInterfaceOrientations~ipad array' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :UISupportedInterfaceOrientations~ipad:0 string UIInterfaceOrientationLandscapeLeft' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :UISupportedInterfaceOrientations~ipad:1 string UIInterfaceOrientationLandscapeRight' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :UIFileSharingEnabled bool true' "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :LSSupportsOpeningDocumentsInPlace bool true' "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Delete :CFBundleURLTypes' "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :CFBundleURLTypes array' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :CFBundleURLTypes:0 dict' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :CFBundleURLTypes:0:CFBundleURLName string com.neogamelab.neostation' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :CFBundleURLTypes:0:CFBundleURLSchemes array' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string neostation' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Delete :LSApplicationQueriesSchemes' "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes array' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes:0 string retroarch' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes:1 string shortcuts' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes:2 string armsx2' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes:3 string melonx' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Add :LSApplicationQueriesSchemes:4 string neomelonx' "$PLIST"
+          plutil -lint "$PLIST"
+
+      - name: Generate app icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart run flutter_launcher_icons
+          if [ -f build-utils/force_ios_fork_icon.sh ]; then
+            chmod +x build-utils/force_ios_fork_icon.sh
+            build-utils/force_ios_fork_icon.sh
+          fi
+
+      - name: Build unsigned app
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          flutter build ios --release --no-codesign --build-number="$BUILD_NUMBER" --dart-define-from-file=.dart-defines.json 2>&1 | tee build-ios.log
+          test -d build/ios/iphoneos/Runner.app
+
+      - name: Verify packaged CoreDevice path
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNNER=build/ios/iphoneos/Runner.app/Runner
+          STIK=build/ios/iphoneos/Runner.app/Frameworks/StikJIT.framework/StikJIT
+          strings "$RUNNER" | grep -q 'DOLPHIN_COREDEVICE_PAYLOAD_ACCEPTED'
+          strings "$RUNNER" | grep -q 'CoreDevice/SpringBoard payloadURL'
+          nm -gU "$STIK" | grep -q '_app_service_open_url$'
+          ! strings "$RUNNER" | grep -q -- '--neostation-game='
+
+      - name: Package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGING=/tmp/neostation-dolphin-188
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING/Payload"
+          cp -R build/ios/iphoneos/Runner.app "$STAGING/Payload/Runner.app"
+          (cd "$STAGING" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload "$GITHUB_WORKSPACE/${ARTIFACT_BASENAME}.ipa")
+          test -s "${ARTIFACT_BASENAME}.ipa"
+
+      - name: Upload IPA and build log
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_BASENAME }}
+          path: |
+            ${{ env.ARTIFACT_BASENAME }}.ipa
+            build-ios.log
+            build-utils/patch_dolphin_coredevice_handoff.py
+            build-utils/patch_idevice_coredevice_payload_url.py
+          if-no-files-found: error
+          retention-days: 30
