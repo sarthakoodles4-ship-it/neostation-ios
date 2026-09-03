@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/build-dolphinios-neostation-companion.yml'
       - 'build-utils/patch_dolphinios_neostation_direct_launch.py'
+      - 'build-utils/patch_dolphinios_neostation_autoboot_fix.py'
 
 permissions:
   contents: read
@@ -22,7 +23,7 @@ jobs:
     timeout-minutes: 180
     env:
       UPSTREAM_COMMIT: 7cac54161659421ed95c2cd1c0b0746539a4cd38
-      OUTPUT_BASENAME: NeoStation-DolphiniOS-DirectLaunch
+      OUTPUT_BASENAME: NeoStation-DolphiniOS-DirectLaunch-B186
       HOMEBREW_NO_AUTO_UPDATE: '1'
 
     steps:
@@ -62,6 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 build-utils/patch_dolphinios_neostation_direct_launch.py dolphin-ios-upstream
+          python3 build-utils/patch_dolphinios_neostation_autoboot_fix.py dolphin-ios-upstream
           PLIST=dolphin-ios-upstream/Source/iOS/App/DolphiniOS/Info.plist
           MAIN=dolphin-ios-upstream/Source/iOS/App/Common/main.m
           SCENE=dolphin-ios-upstream/Source/iOS/App/Common/MainDisplaySceneDelegate.swift
@@ -75,6 +77,9 @@ jobs:
           grep -q 'NeoStationPendingGameRelativePath' "$SCENE"
           grep -q 'launchPendingNeoStationGameIfPossible' "$SOFTWARE"
           grep -q 'EmulationBootTypeFile' "$SOFTWARE"
+          grep -q 'NeoStation immediate cold-start launch' "$SOFTWARE"
+          grep -q 'hasSuffix:expectedSuffix' "$SOFTWARE"
+          grep -q 'filenameMatchCount == 1' "$SOFTWARE"
           test -f "$ICON"
 
       - name: Archive non-jailbroken DolphiniOS
@@ -93,7 +98,7 @@ jobs:
             -configuration 'Release (Non-Jailbroken)' \
             -scheme 'DiOS (NJB)' \
             DOL_PBID_ORGANIZATION_IDENTIFIER='me.oatmealdome' \
-            DOL_BUILD_SOURCE='neostation-direct-launch' \
+            DOL_BUILD_SOURCE='neostation-direct-launch-b186' \
             DOL_APP_ICON_ASSET_NAME='AppIconBeta' \
             ASSETCATALOG_COMPILER_APPICON_NAME='AppIconBeta' \
             CODE_SIGNING_ALLOWED='NO' \
@@ -122,8 +127,10 @@ jobs:
           Upstream: https://github.com/OatmealDome/dolphin-ios
           Upstream commit: $UPSTREAM_COMMIT
           NeoStation modification source: build-utils/patch_dolphinios_neostation_direct_launch.py
+          Cold-start auto-boot fix: build-utils/patch_dolphinios_neostation_autoboot_fix.py
           Primary direct-launch handoff: --neostation-game=<relative Software path> injected before suspended launch
           Secondary URL receiver: dolphinios-neostation://launch?path=<relative Software path>
+          Build B186 consumes the pending game immediately from the visible Software cache and tolerates iOS container path aliases.
           The IPA is unsigned and intended to be signed by the user's normal iOS sideloading workflow.
           EOF
 
@@ -136,6 +143,7 @@ jobs:
             ${{ env.OUTPUT_BASENAME }}.ipa
             ${{ env.OUTPUT_BASENAME }}-SOURCE.txt
             build-utils/patch_dolphinios_neostation_direct_launch.py
+            build-utils/patch_dolphinios_neostation_autoboot_fix.py
             dolphinios-build.log
           if-no-files-found: warn
           retention-days: 30
