@@ -426,6 +426,13 @@ final class DolphinIdeviceRuntime {
         ?? ""
       let path = dictionary["Path"] as? String ?? ""
       let executable = dictionary["CFBundleExecutable"] as? String ?? ""
+      let urlTypes = dictionary["CFBundleURLTypes"] as? [[String: Any]] ?? []
+      let hasNeoStationDirectLaunchScheme = urlTypes.contains { entry in
+        let schemes = entry["CFBundleURLSchemes"] as? [String] ?? []
+        return schemes.contains {
+          $0.caseInsensitiveCompare("dolphinios-neostation") == .orderedSame
+        }
+      }
 
       let bundleLower = bundleId.lowercased()
       let nameLower = name.lowercased()
@@ -433,6 +440,16 @@ final class DolphinIdeviceRuntime {
       let executableLower = executable.lowercased()
       var score = 0
 
+      // The direct-launch companion must win over a stock DolphiniOS install.
+      // Both may be present after sideloaders rewrite bundle identifiers, so
+      // the private URL receiver and display name are stronger signals than an
+      // exact legacy bundle-id hint.
+      if hasNeoStationDirectLaunchScheme {
+        score += 2000
+      }
+      if nameLower.contains("dolphin") && nameLower.contains("neostation") {
+        score += 1500
+      }
       if bundleLower == preferred {
         score += 360
       }
