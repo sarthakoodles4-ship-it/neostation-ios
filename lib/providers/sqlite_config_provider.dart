@@ -17,6 +17,7 @@ import '../repositories/system_repository.dart';
 import '../repositories/config_repository.dart';
 import '../repositories/game_repository.dart';
 import '../services/config_service.dart';
+import '../services/dolphin_ios_folder_service.dart';
 import '../services/permission_service.dart';
 import '../services/steam_scraper_service.dart';
 import '../services/systems_update_service.dart';

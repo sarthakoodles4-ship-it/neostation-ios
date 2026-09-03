@@ -49,6 +49,7 @@ import 'package:path/path.dart' as path;
 import 'package:neostation/services/retroarch_library_service.dart';
 import 'package:neostation/services/armsx2_library_service.dart';
 import 'package:neostation/services/armsx2_folder_service.dart';
+import 'package:neostation/services/dolphin_ios_folder_service.dart';
 import 'package:neostation/services/melonx_library_service.dart';
 import 'package:neostation/services/rpcs3_library_service.dart';
 import 'package:neostation/services/rpcs3_launch_service.dart';
@@ -313,6 +314,24 @@ void main() async {
       ConfigService.linkedArmsx2FolderPath = null;
       ConfigService.linkedArmsx2GameFolderPath = null;
     }
+    final linkedDolphinPath =
+        await ExternalFolderAccess.resolveBookmarkedFolder(
+          key: DolphinIosFolderService.bookmarkKey,
+        );
+    if (linkedDolphinPath != null && linkedDolphinPath.trim().isNotEmpty) {
+      final root = await DolphinIosFolderService.resolveRoot(linkedDolphinPath);
+      ConfigService.linkedDolphinFolderPath = root;
+      ConfigService.linkedDolphinSoftwareFolderPath =
+          await DolphinIosFolderService.resolveSoftwareDirectory(root);
+      log.i(
+        'DolphiniOS isolated root restored: root=$root '
+        'software=${ConfigService.linkedDolphinSoftwareFolderPath ?? "none"}',
+      );
+    } else {
+      ConfigService.linkedDolphinFolderPath = null;
+      ConfigService.linkedDolphinSoftwareFolderPath = null;
+    }
+
     ConfigService.linkedMelonxSaveFolderPath =
         await ExternalFolderAccess.resolveBookmarkedFolder(
           key: ConfigService.melonxNeoSyncBookmarkKey,

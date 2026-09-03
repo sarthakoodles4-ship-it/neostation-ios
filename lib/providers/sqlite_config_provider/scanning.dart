@@ -103,6 +103,23 @@ extension SqliteConfigScanning on SqliteConfigProvider {
         await SqliteConfigService.saveConfig(_config);
         SqliteConfigProvider._log.i('Registered isolated ARMSX2 PS2 library: $armsx2GameDir');
       }
+
+      final dolphinSoftware =
+          ConfigService.linkedDolphinSoftwareFolderPath?.trim();
+      if (dolphinSoftware != null &&
+          dolphinSoftware.isNotEmpty &&
+          !_config.romFolders.contains(dolphinSoftware) &&
+          _config.romFolders.length < 5) {
+        _config = _config.copyWith(
+          romFolders: [..._config.romFolders, dolphinSoftware],
+          lastScan: DateTime.now(),
+          setupCompleted: true,
+        );
+        await SqliteConfigService.saveConfig(_config);
+        SqliteConfigProvider._log.i(
+          'Registered isolated DolphiniOS Software library: $dolphinSoftware',
+        );
+      }
     }
 
     // Re-probe the fast SAF walk once per scan: the permission behind it can be
@@ -204,6 +221,28 @@ extension SqliteConfigScanning on SqliteConfigProvider {
           detectedSystems = [...detectedSystems, ps2];
         } catch (e) {
           SqliteConfigProvider._log.w('Could not inject PS2 for ARMSX2 scan: $e');
+        }
+      }
+
+      if (Platform.isIOS &&
+          ConfigService.linkedDolphinSoftwareFolderPath?.isNotEmpty == true) {
+        final platforms = await DolphinIosFolderService.detectPlatforms(
+          ConfigService.linkedDolphinSoftwareFolderPath!,
+        );
+        for (final folderName in platforms) {
+          if (detectedSystems.any((system) => system.folderName == folderName)) {
+            continue;
+          }
+          try {
+            final dolphinSystem = _availableSystems.firstWhere(
+              (system) => system.folderName == folderName,
+            );
+            detectedSystems = [...detectedSystems, dolphinSystem];
+          } catch (e) {
+            SqliteConfigProvider._log.w(
+              'Could not inject $folderName for DolphiniOS scan: $e',
+            );
+          }
         }
       }
 

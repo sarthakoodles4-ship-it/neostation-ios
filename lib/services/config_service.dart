@@ -42,6 +42,13 @@ class ConfigService {
   /// Physical PS2 library derived from the one ARMSX2 root bookmark.
   static String? linkedArmsx2GameFolderPath;
 
+  /// iOS-only DolphiniOS Documents root. One security-scoped bookmark is
+  /// authoritative for both the Software library and NeoSync save data.
+  static String? linkedDolphinFolderPath;
+
+  /// Physical GameCube/Wii library derived as <DolphiniOS>/Software.
+  static String? linkedDolphinSoftwareFolderPath;
+
   /// MeloNX keeps its own existing NeoSync bookmark. ARMSX2 does not: its
   /// NeoSync paths are always derived from [linkedArmsx2FolderPath].
   static const String melonxNeoSyncBookmarkKey = 'neosync-melonx-saves';

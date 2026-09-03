@@ -10,6 +10,9 @@ class StikjitBridge {
   static const MethodChannel _rpcs3Channel = MethodChannel(
     'neostation/stikjit_rpcs3',
   );
+  static const MethodChannel _dolphinChannel = MethodChannel(
+    'neostation/stikjit_dolphin',
+  );
 
   static Future<StikjitLaunchResult> enableMeloNxJit({
     required String pairingFilePath,
@@ -79,6 +82,37 @@ class StikjitBridge {
       bundleId: data['bundleId']?.toString(),
       txmPresent: data['txmPresent'] as bool?,
       gameUrlOpened: data['gameUrlOpened'] as bool?,
+      logs: logs,
+    );
+  }
+
+  static Future<StikjitLaunchResult> enableDolphinJit({
+    required String pairingFilePath,
+    required String bundleId,
+  }) async {
+    final raw = await _dolphinChannel.invokeMethod<Object?>(
+      'enableDolphinJit',
+      {'pairingFilePath': pairingFilePath, 'bundleId': bundleId},
+    );
+
+    if (raw is! Map) {
+      throw StateError('DolphiniOS StikJIT bridge returned an invalid response.');
+    }
+    final data = Map<String, dynamic>.from(raw);
+    final pidValue = data['pid'];
+    if (pidValue is! num) {
+      throw StateError('DolphiniOS StikJIT bridge did not return the target PID.');
+    }
+    final logs = <String>[];
+    final rawLogs = data['logs'];
+    if (rawLogs is List) {
+      logs.addAll(rawLogs.map((entry) => entry.toString()));
+    }
+    return StikjitLaunchResult(
+      pid: pidValue.toInt(),
+      bundleId: data['bundleId']?.toString(),
+      txmPresent: data['txmPresent'] as bool?,
+      gameUrlOpened: null,
       logs: logs,
     );
   }

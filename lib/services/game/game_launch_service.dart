@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:neostation/services/retroarch_library_service.dart';
 import 'package:neostation/services/armsx2_library_service.dart';
 import 'package:neostation/services/armsx2_folder_service.dart';
+import 'package:neostation/services/dolphin_ios_folder_service.dart';
+import 'package:neostation/services/stikjit_dolphin_service.dart';
 import 'package:neostation/services/melonx_library_service.dart';
 import 'package:neostation/services/rpcs3_library_service.dart';
 import 'package:neostation/services/rpcs3_launch_service.dart';
@@ -247,6 +249,20 @@ class GameLaunchService {
               game.romPath,
             );
           }
+        }
+
+        final iosSystem = system.folderName.toLowerCase();
+        if ((iosSystem == 'gc' || iosSystem == 'wii') &&
+            DolphinIosFolderService.ownsRomPath(
+              game.romPath,
+              ConfigService.linkedDolphinSoftwareFolderPath,
+            )) {
+          final launched = await StikJitDolphinService.launch();
+          if (launched) return GameLaunchResult.success();
+          return GameLaunchResult.failure(
+            'Could not start this ${iosSystem == 'gc' ? 'GameCube' : 'Wii'} game path in DolphiniOS.',
+            StikJitDolphinService.lastError ?? game.romPath,
+          );
         }
 
         // Genuine one-tap launch via RetroArch's synced library and

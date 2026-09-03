@@ -77,6 +77,20 @@ extension NeoSyncUpload on NeoSyncProvider {
             }
           }
         }
+        final dolphinRoot = ConfigService.linkedDolphinFolderPath;
+        if (dolphinRoot != null && Directory(dolphinRoot).existsSync()) {
+          for (final entry
+              in await DolphinIosFolderService.collectNeoSyncFiles(dolphinRoot)) {
+            customSaveFiles.add((
+              file: entry.file,
+              root: dolphinRoot,
+              system: entry.system,
+              emulatorSlug: 'dolphinios',
+              isState: entry.isState,
+            ));
+          }
+        }
+
         final melonxRoot = ConfigService.linkedMelonxSaveFolderPath;
         if (melonxRoot != null && Directory(melonxRoot).existsSync()) {
           for (final file in await _getSaveFiles(melonxRoot)) {

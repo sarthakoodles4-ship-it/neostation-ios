@@ -9,6 +9,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:external_folder_access/external_folder_access.dart';
 import 'package:neostation/services/retroarch_library_service.dart';
 import 'package:neostation/services/armsx2_folder_service.dart';
+import 'package:neostation/services/dolphin_ios_folder_service.dart';
+import 'package:neostation/services/stikjit_dolphin_service.dart';
 import 'package:neostation/services/melonx_library_service.dart';
 import 'package:neostation/services/rpcs3_library_service.dart';
 import 'package:neostation/services/ios_shortcut_jit_launch_service.dart';
@@ -656,6 +658,60 @@ class DirectoriesSettingsContentState
     }
   }
 
+  Future<void> _linkDolphinRootFolder() async {
+    if (_linkingFolderKey != null) return;
+    setState(() => _linkingFolderKey = DolphinIosFolderService.bookmarkKey);
+    try {
+      final selected = await ExternalFolderAccess.pickAndBookmarkFolder(
+        key: DolphinIosFolderService.bookmarkKey,
+      );
+      if (selected == null || !mounted) return;
+      final bookmarked = await ExternalFolderAccess.resolveBookmarkedFolder(
+        key: DolphinIosFolderService.bookmarkKey,
+      );
+      final root = await DolphinIosFolderService.resolveRoot(bookmarked ?? selected);
+      final software = await DolphinIosFolderService.resolveSoftwareDirectory(root);
+      if (software == null || software.isEmpty) {
+        throw const FormatException(
+          'Select the DolphiniOS Documents folder containing Software, GC, Wii and StateSaves.',
+        );
+      }
+      final previousSoftware = ConfigService.linkedDolphinSoftwareFolderPath;
+      ConfigService.linkedDolphinFolderPath = root;
+      ConfigService.linkedDolphinSoftwareFolderPath = software;
+
+      if (!mounted) return;
+      final configProvider = Provider.of<SqliteConfigProvider>(context, listen: false);
+      if (previousSoftware != null &&
+          previousSoftware != software &&
+          configProvider.config.romFolders.contains(previousSoftware)) {
+        await configProvider.removeRomFolder(previousSoftware);
+      }
+      if (configProvider.config.romFolders.contains(software)) {
+        await configProvider.scanSystems();
+      } else {
+        await configProvider.addRomFolder(software, scan: true);
+      }
+      if (!mounted) return;
+      await _loadCurrentPaths();
+      if (mounted) setState(() {});
+      _log.i('DolphiniOS isolated root linked: root=$root software=$software');
+    } catch (e) {
+      _log.e('DolphiniOS root link failed: $e');
+      if (mounted) {
+        AppNotification.showNotification(
+          context,
+          AppLocale.iosEmuLinkingFailed
+              .getString(context)
+              .replaceFirst('{error}', e.toString()),
+          type: NotificationType.error,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _linkingFolderKey = null);
+    }
+  }
+
   Future<void> _linkNeoSyncSaveFolder({
     required String bookmarkKey,
     required String emulatorName,
@@ -744,6 +800,39 @@ class DirectoriesSettingsContentState
       context,
       AppLocale.shortcutSetupOpenError.getString(context),
       type: NotificationType.error,
+    );
+  }
+
+  Future<void> _syncWithDolphin() async {
+    final root = ConfigService.linkedDolphinFolderPath;
+    if (root == null || root.isEmpty) return;
+    final software = await DolphinIosFolderService.resolveSoftwareDirectory(root);
+    ConfigService.linkedDolphinSoftwareFolderPath = software;
+    if (software == null || software.isEmpty || !mounted) return;
+    final configProvider = Provider.of<SqliteConfigProvider>(context, listen: false);
+    if (configProvider.config.romFolders.contains(software)) {
+      await configProvider.scanSystems();
+    } else {
+      await configProvider.addRomFolder(software, scan: true);
+    }
+    if (!mounted) return;
+    setState(() {});
+    AppNotification.showNotification(
+      context,
+      'DolphiniOS library and save folders refreshed.',
+      type: NotificationType.success,
+    );
+  }
+
+  Future<void> _prepareDolphinJit() async {
+    final launched = await StikJitDolphinService.launch();
+    if (!mounted) return;
+    AppNotification.showNotification(
+      context,
+      launched
+          ? 'DolphiniOS opened with StikJIT. Direct game handoff is still experimental.'
+          : (StikJitDolphinService.lastError ?? 'Could not start DolphiniOS with StikJIT.'),
+      type: launched ? NotificationType.success : NotificationType.error,
     );
   }
 
@@ -844,6 +933,7 @@ class DirectoriesSettingsContentState
 
     return [
       _buildIOSRetroArchSection(theme),
+      _buildIOSDolphinSection(theme),
       _buildIOSRpcs3Section(theme),
       _buildIOSArmsx2Section(theme),
       _buildIOSMeloNXSection(theme),
@@ -883,6 +973,57 @@ class DirectoriesSettingsContentState
             style: TextStyle(fontSize: 14.r),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildIOSDolphinSection(ThemeData theme) {
+    final isLinked = ConfigService.linkedDolphinFolderPath != null;
+    final hasLibrary = ConfigService.linkedDolphinSoftwareFolderPath != null;
+    final statusText = !isLinked
+        ? 'Link the DolphiniOS Documents root.'
+        : hasLibrary
+        ? 'Software library + GC/Wii/StateSaves linked.'
+        : 'DolphiniOS root linked; Software was not found.';
+
+    return _buildIOSEmulatorCard(
+      theme: theme,
+      name: 'DolphiniOS',
+      icon: Symbols.sports_esports_rounded,
+      statusText: statusText,
+      isLinked: isLinked,
+      bookmarkKey: DolphinIosFolderService.bookmarkKey,
+      successMessage: '',
+      onLinkPressed: _linkDolphinRootFolder,
+      trailingAction: Row(
+        children: [
+          Expanded(
+            child: SizedBox(
+              height: 48.r,
+              child: FilledButton.icon(
+                onPressed: isLinked ? _syncWithDolphin : null,
+                icon: Icon(Symbols.sync_rounded, size: 20.r),
+                label: Text(
+                  hasLibrary
+                      ? AppLocale.iosEmuResync.getString(context)
+                      : AppLocale.iosEmuSync.getString(context),
+                  style: TextStyle(fontSize: 14.r),
+                ),
+              ),
+            ),
+          ),
+          SizedBox(width: 10.r),
+          Expanded(
+            child: SizedBox(
+              height: 48.r,
+              child: OutlinedButton.icon(
+                onPressed: isLinked ? _prepareDolphinJit : null,
+                icon: Icon(Symbols.bolt_rounded, size: 20.r),
+                label: Text('StikJIT', style: TextStyle(fontSize: 14.r)),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

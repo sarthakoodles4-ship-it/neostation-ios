@@ -8,5 +8,6 @@ public final class NeoStationStikjitBridgePluginV2: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
     NeoStationStikjitBridgePlugin.register(with: registrar)
     StikjitRpcs3BridgePlugin.register(with: registrar)
+    StikjitDolphinBridgePlugin.register(with: registrar)
   }
 }

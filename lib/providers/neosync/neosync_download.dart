@@ -124,6 +124,40 @@ extension NeoSyncDownload on NeoSyncProvider {
         return;
       }
 
+      if (Platform.isIOS && parsed?.emulatorSlug == 'dolphinios') {
+        final root = ConfigService.linkedDolphinFolderPath;
+        if (root == null || root.isEmpty) return;
+        final localPath = DolphinIosFolderService.resolveCloudFileToLocal(
+          root,
+          parsed!.filePath,
+        );
+        if (localPath == null) return;
+        final localFile = File(localPath);
+        if (localFile.existsSync()) {
+          final stat = await localFile.stat();
+          if (cloudFile.checksum != null && cloudFile.checksum!.isNotEmpty) {
+            final hash = _neoSyncService.calculateFileHash(
+              await localFile.readAsBytes(),
+            );
+            if (hash == cloudFile.checksum) {
+              _skippedFiles++;
+              return;
+            }
+          }
+          final cloudTime = cloudFile.fileModifiedAtTimestamp ?? 0;
+          if (cloudTime <= stat.modified.millisecondsSinceEpoch) {
+            _skippedFiles++;
+            return;
+          }
+        } else {
+          await localFile.parent.create(recursive: true);
+        }
+        await _downloadCloudFileImpl(cloudFile, localFile);
+        _downloadedFiles++;
+        _processedItems.add('DolphiniOS restored: ${cloudFile.gameName}');
+        return;
+      }
+
       if (Platform.isIOS && parsed?.emulatorSlug == 'rpcs3') {
         final root = Rpcs3LibraryService.linkedDataPath;
         if (root == null || root.isEmpty) return;

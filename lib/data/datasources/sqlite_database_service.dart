@@ -10,6 +10,7 @@ import 'package:neostation/services/android_service.dart';
 import 'package:neostation/services/saf_directory_service.dart';
 import 'package:neostation/services/logger_service.dart';
 import 'package:neostation/services/config_service.dart';
+import 'package:neostation/services/dolphin_ios_folder_service.dart';
 
 import 'dart:io';
 import 'dart:convert';
@@ -192,12 +193,33 @@ class SqliteDatabaseService {
           String canonicalPath,
           bool useSaf,
           bool isAlias,
+          bool isDolphinSoftware,
         })>[];
 
     for (final romFolder in romFolders) {
       final bool useSaf =
           Platform.isAndroid && romFolder.startsWith('content://');
       final Map<String, String>? subdirsForRoot = rootFoldersMap?[romFolder];
+
+      final dolphinSoftware = ConfigService.linkedDolphinSoftwareFolderPath;
+      final isDolphinSoftwareRoot =
+          Platform.isIOS &&
+          dolphinSoftware != null &&
+          DolphinIosFolderService.isSoftwareRoot(romFolder, dolphinSoftware);
+      if (isDolphinSoftwareRoot) {
+        final dolphinSystem = system.folderName.toLowerCase();
+        if (dolphinSystem != 'gc' && dolphinSystem != 'wii') {
+          continue;
+        }
+        scanTargets.add((
+          dirPath: romFolder,
+          canonicalPath: await _canonicalScanPath(romFolder, useSaf: false),
+          useSaf: false,
+          isAlias: await _isDirectSymbolicLink(romFolder),
+          isDolphinSoftware: true,
+        ));
+        continue;
+      }
 
       final armsx2GameDir = ConfigService.linkedArmsx2GameFolderPath;
       final isDirectArmsx2Ps2Root =
@@ -211,6 +233,7 @@ class SqliteDatabaseService {
           canonicalPath: await _canonicalScanPath(romFolder, useSaf: false),
           useSaf: false,
           isAlias: await _isDirectSymbolicLink(romFolder),
+          isDolphinSoftware: false,
         ));
         continue;
       }
@@ -242,6 +265,7 @@ class SqliteDatabaseService {
             canonicalPath: await _canonicalScanPath(dirPath, useSaf: useSaf),
             useSaf: useSaf,
             isAlias: useSaf ? false : await _isDirectSymbolicLink(dirPath),
+            isDolphinSoftware: false,
           ));
         } catch (e) {
           _log.e('Error resolving folder $folderToScan in $romFolder: $e');
@@ -263,21 +287,30 @@ class SqliteDatabaseService {
       if (!walkedDirs.add(target.canonicalPath)) continue;
 
       try {
+        final recursive = target.isDolphinSoftware || system.recursiveScan;
         final entries = target.useSaf
             ? await _scanSafUri(
                 target.dirPath,
                 validExtensionsSet,
-                system.recursiveScan,
+                recursive,
                 ignoreHiddenFiles: ignoreHiddenFiles,
               )
             : await _scanStandardPath(
                 target.dirPath,
                 validExtensionsSet,
-                system.recursiveScan,
+                recursive,
                 ignoreHiddenFiles: ignoreHiddenFiles,
               );
 
-        if (entries.isNotEmpty) {
+        if (target.isDolphinSoftware) {
+          for (final entry in entries) {
+            final classified =
+                await DolphinIosFolderService.classifyGamePath(entry.path);
+            if (classified == system.folderName.toLowerCase()) {
+              romEntries.add(entry);
+            }
+          }
+        } else if (entries.isNotEmpty) {
           romEntries.addAll(entries);
         }
       } catch (e) {

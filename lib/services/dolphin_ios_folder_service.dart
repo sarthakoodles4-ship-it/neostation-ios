@@ -164,7 +164,6 @@ class DolphinIosFolderService {
         return 'gc';
       case '.wbfs':
       case '.wad':
-      case '.ciso':
       case '.nfs':
         return 'wii';
       case '.iso':

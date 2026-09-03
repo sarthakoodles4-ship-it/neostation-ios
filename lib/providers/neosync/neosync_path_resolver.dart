@@ -32,6 +32,23 @@ extension NeoSyncPathResolver on NeoSyncProvider {
       return retroPaths.toSet().toList();
     }
 
+    if (Platform.isIOS &&
+        (system.folderName.toLowerCase() == 'gc' ||
+            system.folderName.toLowerCase() == 'wii')) {
+      final dolphinRoot = ConfigService.linkedDolphinFolderPath;
+      final softwareRoot = ConfigService.linkedDolphinSoftwareFolderPath;
+      final isDolphinGame = DolphinIosFolderService.ownsRomPath(
+        game?.romPath,
+        softwareRoot,
+      );
+      if (isDolphinGame && dolphinRoot != null && dolphinRoot.isNotEmpty) {
+        return DolphinIosFolderService.resolveSaveDirectoriesForSystem(
+          dolphinRoot,
+          system.folderName.toLowerCase(),
+        );
+      }
+    }
+
     // System JSON predates iOS NeoSync and has no ios_sync_folder entries.
     // RetroArch's bookmarked saves/states roots are authoritative for preview 1.
     if (Platform.isIOS && folders.isEmpty) {
