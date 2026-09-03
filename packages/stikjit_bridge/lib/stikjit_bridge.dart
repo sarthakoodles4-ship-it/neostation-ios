@@ -118,6 +118,7 @@ class StikjitBridge {
       bundleId: data['bundleId']?.toString(),
       txmPresent: data['txmPresent'] as bool?,
       gameUrlOpened: data['gameUrlOpened'] as bool?,
+      gameHandoffReady: data['gameHandoffReady'] as bool?,
       logs: logs,
     );
   }
@@ -165,6 +166,7 @@ class StikjitLaunchResult {
     required this.bundleId,
     required this.txmPresent,
     required this.gameUrlOpened,
+    this.gameHandoffReady,
     required this.logs,
   });
 
@@ -172,5 +174,6 @@ class StikjitLaunchResult {
   final String? bundleId;
   final bool? txmPresent;
   final bool? gameUrlOpened;
+  final bool? gameHandoffReady;
   final List<String> logs;
 }
