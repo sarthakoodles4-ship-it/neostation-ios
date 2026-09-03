@@ -8,10 +8,10 @@ import 'package:stikjit_bridge/stikjit_bridge.dart';
 
 /// Fourth isolated NeoStation StikJIT target, dedicated to official DolphiniOS.
 ///
-/// DolphiniOS currently has no public direct-game URL scheme. This first stage
-/// therefore launches the detected app suspended and runs StikJIT's legacy
-/// script. The script stays attached until DolphiniOS reaches its iOS 26/27
-/// `brk #0x69` JIT-region handshake when a game is started in Dolphin.
+/// DolphiniOS currently has no public direct-game URL scheme. NeoStation starts
+/// the app suspended, arms StikJIT's legacy script, then returns immediately.
+/// The native legacy session remains alive in the background until DolphiniOS
+/// starts emulation and reaches its iOS 26/27 `brk #0x69` JIT-region handshake.
 class StikJitDolphinService {
   StikJitDolphinService._();
 
@@ -76,10 +76,11 @@ class StikJitDolphinService {
         _log.d('StikJIT DolphiniOS: $message');
       }
       await _appendDiagnostic(
-        'STATE: DOLPHIN_JIT_READY\n'
+        'STATE: DOLPHIN_JIT_ARMED\n'
         'PID: ${jit.pid}\n'
         'Detected bundle ID: ${jit.bundleId ?? 'unknown'}\n'
         'TXM: ${jit.txmPresent ?? 'unknown'}\n'
+        'The legacy JIT handshake continues asynchronously until Dolphin starts emulation.\n'
         'Native log:\n${jit.logs.join('\n')}\n',
       );
       return true;
