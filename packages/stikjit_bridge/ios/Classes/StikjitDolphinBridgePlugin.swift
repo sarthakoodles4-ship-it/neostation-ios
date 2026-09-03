@@ -5,14 +5,12 @@ import UIKit
 
 /// Independent StikJIT path for official DolphiniOS.
 ///
-/// Do not route this through the MeloNX/ARMSX2/RPCS3 universal-script paths:
-/// current DolphiniOS uses the legacy `brk #0x69` handshake on TXM devices.
-///
-/// Unlike the other targets, the legacy Dolphin script can legitimately remain
-/// attached while the user is still on DolphiniOS' software list. The Flutter
-/// method therefore returns as soon as the target process is launched and the
-/// background JIT session has been armed. The blocking `enableJIT` call stays on
-/// its own queue until Dolphin starts emulation and reaches `brk #0x69`.
+/// DolphiniOS uses StikJIT's legacy `brk #0x69` handshake on TXM devices. The
+/// handshake itself must remain alive until emulation starts, but NeoStation
+/// must not return control before debugserver has actually attached to Dolphin.
+/// This bridge therefore waits only for legacy.js' successful `vAttach` result,
+/// lets the script resume Dolphin and block on `brk #0x69`, then returns to
+/// Flutter while the final memory bless/detach continues in the background.
 public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
   private static let channelName = "neostation/stikjit_dolphin"
   private static let launchQueue = DispatchQueue(
@@ -23,6 +21,7 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
     label: "com.neogamelab.neostation.stikjit.dolphin.legacy",
     qos: .userInitiated
   )
+  private static let diagnosticLock = NSLock()
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
@@ -80,11 +79,6 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
           bundleIdHint: bundleIdHint,
           backgroundTask: backgroundTask
         )
-
-        // Do not wait for legacy.js to see brk #0x69. That breakpoint only
-        // happens when the user (or a future direct-launch handoff) starts a
-        // game inside DolphiniOS. Returning here prevents NeoStation's
-        // "Launching game" overlay from waiting forever.
         DispatchQueue.main.async {
           result(response)
         }
@@ -173,18 +167,20 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
 
     preparationLogs.append("Detected DolphiniOS bundle ID: \(launch.bundleId).")
     preparationLogs.append("DolphiniOS launched suspended with PID \(launch.pid).")
-    preparationLogs.append("STATE: DOLPHIN_JIT_ARMED")
-    preparationLogs.append(
-      "legacy.js is running asynchronously and will finish when DolphiniOS starts emulation and reaches brk #0x69."
-    )
 
-    // Copy the preparation log before starting another queue. The session owns
-    // its own mutable array so the response returned to Flutter cannot race
-    // with progress callbacks from StikJIT.
-    let armedLogs = preparationLogs
+    let expectsLegacyBreakpoint = securityState.isTXMPresent != false
+    let attachGate = DolphinAttachGate()
+    let initialLogs = preparationLogs
+
+    Self.appendNativeDiagnostic([
+      "STATE: DOLPHIN_PROCESS_LAUNCHED",
+      "PID: \(launch.pid)",
+      "Bundle ID: \(launch.bundleId)",
+      "TXM: \(String(describing: securityState.isTXMPresent))",
+    ])
 
     Self.legacyQueue.async {
-      var sessionLogs = armedLogs
+      var sessionLogs = initialLogs
       do {
         try StikJIT.enableJIT(
           targetPID: launch.pid,
@@ -194,18 +190,52 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
           script: .legacy,
           forceScript: false,
           preparationProgress: { stage in
-            sessionLogs.append(Self.preparationDescription(stage))
+            let message = Self.preparationDescription(stage)
+            sessionLogs.append(message)
+            Self.appendNativeDiagnostic(["JIT_PREPARATION: \(message)"])
           },
           progress: { message in
             sessionLogs.append(message)
+            Self.appendNativeDiagnostic(["JIT_PROGRESS: \(message)"])
+
+            if message.hasPrefix("attach_response = ") {
+              let attachResponse = String(
+                message.dropFirst("attach_response = ".count)
+              ).trimmingCharacters(in: .whitespacesAndNewlines)
+
+              if attachResponse.hasPrefix("T") || attachResponse.hasPrefix("S") {
+                Self.appendNativeDiagnostic([
+                  "STATE: DOLPHIN_DEBUGGER_ATTACHED",
+                  "attach_response = \(attachResponse)",
+                ])
+                attachGate.markAttached(attachResponse)
+              } else {
+                attachGate.markFailed(
+                  "Unexpected vAttach response: \(attachResponse)"
+                )
+              }
+            } else if !expectsLegacyBreakpoint &&
+                        message.contains(
+                          "JIT enabled (debugger attached and detached)."
+                        ) {
+              attachGate.markAttached("NO_TXM_ATTACH_COMPLETE")
+            }
           }
         )
+
+        // A non-TXM session can complete before the progress callback wakes the
+        // launch queue, so this is an additional safe completion signal.
+        if !expectsLegacyBreakpoint {
+          attachGate.markAttached("NO_TXM_ATTACH_COMPLETE")
+        }
+
         sessionLogs.append("STATE: DOLPHIN_JIT_READY")
         sessionLogs.append(
           "StikJIT legacy script completed the Dolphin breakpoint handshake and detached."
         )
         Self.appendNativeDiagnostic(sessionLogs)
       } catch {
+        attachGate.markFailed(error.localizedDescription)
         sessionLogs.append("STATE: DOLPHIN_JIT_BACKGROUND_FAILED")
         sessionLogs.append("Error: \(error.localizedDescription)")
         Self.appendNativeDiagnostic(sessionLogs)
@@ -213,10 +243,41 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
       backgroundTask.end()
     }
 
+    // Do not tell Flutter that Dolphin is ready merely because its process was
+    // launched. The user can select a game immediately after NeoStation returns,
+    // so wait until legacy.js has actually completed vAttach. We deliberately
+    // do NOT wait for brk #0x69, because that only happens after emulation starts.
+    let attachState = attachGate.wait(timeout: 20)
+    if let failure = attachState.failure {
+      throw DolphinBridgeError.debuggerAttachFailed(failure)
+    }
+    guard let attachResponse = attachState.response else {
+      throw DolphinBridgeError.debuggerAttachTimeout
+    }
+
+    // `legacy.js` logs attach_response immediately before issuing `c`. Give its
+    // JavaScript callback a tiny grace period to return and enter the blocking
+    // continue command, so Dolphin is resumed and debugserver is already waiting
+    // for brk #0x69 before the user can tap a game.
+    if expectsLegacyBreakpoint {
+      Thread.sleep(forTimeInterval: 0.20)
+    }
+
+    var armedLogs = preparationLogs
+    armedLogs.append("STATE: DOLPHIN_DEBUGGER_ATTACHED")
+    armedLogs.append("attach_response = \(attachResponse)")
+    armedLogs.append("STATE: DOLPHIN_JIT_ARMED")
+    armedLogs.append(
+      expectsLegacyBreakpoint
+        ? "legacy.js is actively attached and waiting for DolphiniOS brk #0x69."
+        : "Debugger attach/detach completed on this non-TXM device."
+    )
+    Self.appendNativeDiagnostic(armedLogs)
+
     var response: [String: Any] = [
       "pid": Int(launch.pid),
       "bundleId": launch.bundleId,
-      "jitPending": true,
+      "jitPending": expectsLegacyBreakpoint,
       "logs": armedLogs,
     ]
     if let txmPresent = securityState.isTXMPresent {
@@ -226,6 +287,9 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
   }
 
   private static func appendNativeDiagnostic(_ lines: [String]) {
+    diagnosticLock.lock()
+    defer { diagnosticLock.unlock() }
+
     do {
       guard let documents = FileManager.default.urls(
         for: .documentDirectory,
@@ -273,6 +337,43 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
   }
 }
 
+private final class DolphinAttachGate {
+  private let condition = NSCondition()
+  private var attachedResponse: String?
+  private var failureMessage: String?
+
+  func markAttached(_ value: String) {
+    condition.lock()
+    if attachedResponse == nil && failureMessage == nil {
+      attachedResponse = value
+      condition.broadcast()
+    }
+    condition.unlock()
+  }
+
+  func markFailed(_ value: String) {
+    condition.lock()
+    if attachedResponse == nil && failureMessage == nil {
+      failureMessage = value
+      condition.broadcast()
+    }
+    condition.unlock()
+  }
+
+  func wait(timeout: TimeInterval) -> (response: String?, failure: String?) {
+    condition.lock()
+    defer { condition.unlock() }
+
+    let deadline = Date(timeIntervalSinceNow: timeout)
+    while attachedResponse == nil && failureMessage == nil {
+      if !condition.wait(until: deadline) {
+        break
+      }
+    }
+    return (attachedResponse, failureMessage)
+  }
+}
+
 private final class DolphinStikJitBackgroundTask {
   private var identifier: UIBackgroundTaskIdentifier = .invalid
 
@@ -295,6 +396,8 @@ private final class DolphinStikJitBackgroundTask {
 enum DolphinBridgeError: LocalizedError {
   case pairingFileMissing
   case deviceNotReady(String)
+  case debuggerAttachTimeout
+  case debuggerAttachFailed(String)
   case symbolMissing(String)
   case invalidDeviceAddress(String)
   case idevice(String)
@@ -307,6 +410,10 @@ enum DolphinBridgeError: LocalizedError {
       return "The selected pairing file is no longer readable."
     case .deviceNotReady(let reason):
       return "StikJIT device preparation failed for DolphiniOS: \(reason)"
+    case .debuggerAttachTimeout:
+      return "StikJIT did not confirm a debugger attachment to DolphiniOS within 20 seconds."
+    case .debuggerAttachFailed(let message):
+      return "StikJIT could not attach its Dolphin debugger: \(message)"
     case .symbolMissing(let symbol):
       return "StikJIT framework is missing required DolphiniOS symbol \(symbol)."
     case .invalidDeviceAddress(let address):
