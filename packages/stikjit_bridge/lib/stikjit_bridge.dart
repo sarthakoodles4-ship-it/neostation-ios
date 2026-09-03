@@ -89,10 +89,15 @@ class StikjitBridge {
   static Future<StikjitLaunchResult> enableDolphinJit({
     required String pairingFilePath,
     required String bundleId,
+    required String gameRelativePath,
   }) async {
     final raw = await _dolphinChannel.invokeMethod<Object?>(
       'enableDolphinJit',
-      {'pairingFilePath': pairingFilePath, 'bundleId': bundleId},
+      {
+        'pairingFilePath': pairingFilePath,
+        'bundleId': bundleId,
+        'gameRelativePath': gameRelativePath,
+      },
     );
 
     if (raw is! Map) {
@@ -112,7 +117,7 @@ class StikjitBridge {
       pid: pidValue.toInt(),
       bundleId: data['bundleId']?.toString(),
       txmPresent: data['txmPresent'] as bool?,
-      gameUrlOpened: null,
+      gameUrlOpened: data['gameUrlOpened'] as bool?,
       logs: logs,
     );
   }
