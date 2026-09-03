@@ -1,0 +1,35 @@
+name: Materialize DolphiniOS Integration
+
+on:
+  push:
+    branches:
+      - feature/dolphinios-stikjit-neosync
+    paths:
+      - '.github/workflows/materialize-dolphinios-integration.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/dolphinios-stikjit-neosync
+          fetch-depth: 0
+
+      - name: Materialize source changes
+        run: python3 build-utils/apply_dolphinios_integration_181.py
+
+      - name: Commit materialized DolphiniOS integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Tarble FR'
+          git config user.email 'f9wynyv9qy@privaterelay.appleid.com'
+          git add -A
+          git status --short
+          git diff --cached --check
+          git commit -m 'feat(ios): integrate DolphiniOS StikJIT library and NeoSync'
+          git push origin HEAD:feature/dolphinios-stikjit-neosync
