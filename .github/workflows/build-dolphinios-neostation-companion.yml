@@ -1,0 +1,132 @@
+name: Build NeoStation DolphiniOS Companion
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/dolphinios-stikjit-neosync
+    paths:
+      - '.github/workflows/build-dolphinios-neostation-companion.yml'
+      - 'build-utils/patch_dolphinios_neostation_direct_launch.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neostation-dolphinios-companion
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      UPSTREAM_COMMIT: 7cac54161659421ed95c2cd1c0b0746539a4cd38
+      OUTPUT_BASENAME: NeoStation-DolphiniOS-DirectLaunch
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+
+    steps:
+      - name: Checkout NeoStation patch source
+        uses: actions/checkout@v4
+        with:
+          ref: feature/dolphinios-stikjit-neosync
+          fetch-depth: 1
+
+      - name: Select Xcode 16.4
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+
+      - name: Install DolphiniOS build utilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v cmake >/dev/null || brew install cmake
+          command -v ninja >/dev/null || brew install ninja
+          command -v bartycrouch >/dev/null || brew install bartycrouch
+          python3 -m pip install --user polib
+
+      - name: Fetch pinned DolphiniOS source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dolphin-ios-upstream
+          git clone --filter=blob:none --no-checkout https://github.com/OatmealDome/dolphin-ios.git dolphin-ios-upstream
+          cd dolphin-ios-upstream
+          git checkout "$UPSTREAM_COMMIT"
+          test "$(git rev-parse HEAD)" = "$UPSTREAM_COMMIT"
+          git submodule update --init --recursive --depth 1
+
+      - name: Apply NeoStation direct-launch receiver
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build-utils/patch_dolphinios_neostation_direct_launch.py dolphin-ios-upstream
+          PLIST=dolphin-ios-upstream/Source/iOS/App/DolphiniOS/Info.plist
+          SCENE=dolphin-ios-upstream/Source/iOS/App/Common/MainDisplaySceneDelegate.swift
+          SOFTWARE=dolphin-ios-upstream/Source/iOS/App/Common/UI/SoftwareList/SoftwareListViewController.mm
+          plutil -lint "$PLIST"
+          grep -q 'dolphinios-neostation' "$PLIST"
+          grep -q 'openURLContexts' "$SCENE"
+          grep -q 'NeoStationPendingGameRelativePath' "$SCENE"
+          grep -q 'launchPendingNeoStationGameIfPossible' "$SOFTWARE"
+          grep -q 'EmulationBootTypeFile' "$SOFTWARE"
+
+      - name: Archive non-jailbroken DolphiniOS
+        working-directory: dolphin-ios-upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/archives"
+          set -o pipefail
+          xcodebuild archive \
+            -project Source/iOS/App/DolphiniOS.xcodeproj \
+            -derivedDataPath "$GITHUB_WORKSPACE/build-DolphiniOS-Xcode" \
+            -sdk iphoneos \
+            -destination generic/platform=iOS \
+            -archivePath "$GITHUB_WORKSPACE/archives/NonJailbroken.xcarchive" \
+            -configuration 'Release (Non-Jailbroken)' \
+            -scheme 'DiOS (NJB)' \
+            DOL_PBID_ORGANIZATION_IDENTIFIER='me.oatmealdome' \
+            DOL_BUILD_SOURCE='neostation-direct-launch' \
+            CODE_SIGNING_ALLOWED='NO' \
+            CODE_SIGNING_REQUIRED='NO' \
+            2>&1 | tee "$GITHUB_WORKSPACE/dolphinios-build.log"
+
+      - name: Package unsigned companion IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$GITHUB_WORKSPACE/archives/NonJailbroken.xcarchive/Products/Applications/DolphiniOS.app"
+          test -d "$APP"
+          STAGING="$RUNNER_TEMP/neostation-dolphinios-companion"
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING/Payload"
+          cp -R "$APP" "$STAGING/Payload/DolphiniOS.app"
+          (
+            cd "$STAGING"
+            /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload \
+              "$GITHUB_WORKSPACE/${OUTPUT_BASENAME}.ipa"
+          )
+          test -s "$GITHUB_WORKSPACE/${OUTPUT_BASENAME}.ipa"
+
+          cat > "$GITHUB_WORKSPACE/${OUTPUT_BASENAME}-SOURCE.txt" <<EOF
+          NeoStation-compatible DolphiniOS companion
+          Upstream: https://github.com/OatmealDome/dolphin-ios
+          Upstream commit: $UPSTREAM_COMMIT
+          NeoStation modification source: build-utils/patch_dolphinios_neostation_direct_launch.py
+          Added private URL receiver: dolphinios-neostation://launch?path=<relative Software path>
+          The IPA is unsigned and intended to be signed by the user's normal iOS sideloading workflow.
+          EOF
+
+      - name: Upload companion IPA and build log
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_BASENAME }}
+          path: |
+            ${{ env.OUTPUT_BASENAME }}.ipa
+            ${{ env.OUTPUT_BASENAME }}-SOURCE.txt
+            build-utils/patch_dolphinios_neostation_direct_launch.py
+            dolphinios-build.log
+          if-no-files-found: error
+          retention-days: 30
