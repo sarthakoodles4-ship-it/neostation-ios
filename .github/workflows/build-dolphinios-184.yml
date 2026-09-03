@@ -6,6 +6,9 @@ on:
       - feature/dolphinios-stikjit-neosync
     paths:
       - '.github/workflows/build-dolphinios-184.yml'
+      - 'packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift'
+      - 'packages/stikjit_bridge/ios/Classes/DolphinLegacyScript.swift'
+      - 'test/stikjit_dolphin_isolation_test.dart'
 
 permissions:
   contents: read
