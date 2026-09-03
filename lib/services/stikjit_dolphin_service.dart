@@ -1,18 +1,21 @@
 import 'dart:io';
 
+import 'package:neostation/services/config_service.dart';
+import 'package:neostation/services/dolphin_ios_folder_service.dart';
+import 'package:neostation/services/game/game_session_manager.dart';
 import 'package:neostation/services/logger_service.dart';
 import 'package:neostation/services/pairing_file_service.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:stikjit_bridge/stikjit_bridge.dart';
 
-/// Fourth isolated NeoStation StikJIT target, dedicated to official DolphiniOS.
+/// Fourth isolated NeoStation StikJIT target, dedicated to DolphiniOS.
 ///
-/// DolphiniOS currently has no public direct-game URL scheme. NeoStation starts
-/// the app suspended, waits until StikJIT's legacy script has confirmed its
-/// debugger attachment, then returns to the Dolphin software list. The native
-/// legacy session remains alive in the background until DolphiniOS starts
-/// emulation and reaches its iOS 26/27 `brk #0x69` JIT-region handshake.
+/// NeoStation starts DolphiniOS suspended, waits until the guarded legacy
+/// StikJIT debugger is attached, and then opens the NeoStation direct-launch
+/// receiver with the selected ROM's path relative to Dolphin's `Software`
+/// directory. Keeping the path relative makes the handoff survive sideload
+/// resigning and app-container UUID changes.
 class StikJitDolphinService {
   StikJitDolphinService._();
 
@@ -39,9 +42,46 @@ class StikJitDolphinService {
       return false;
     }
 
+    final game = GameSessionManager.currentGame;
+    final system = GameSessionManager.currentGameSystem?.folderName.toLowerCase();
+    final romPath = game?.romPath;
+    final softwareRoot = ConfigService.linkedDolphinSoftwareFolderPath;
+
+    if (system != 'gc' && system != 'wii') {
+      _lastError = 'The active NeoStation session is not GameCube or Wii.';
+      return false;
+    }
+    if (romPath == null || romPath.trim().isEmpty) {
+      _lastError = 'The selected DolphiniOS game has no readable ROM path.';
+      return false;
+    }
+    if (softwareRoot == null || softwareRoot.trim().isEmpty) {
+      _lastError = 'The DolphiniOS Software folder is not linked in NeoStation.';
+      return false;
+    }
+    if (!DolphinIosFolderService.ownsRomPath(romPath, softwareRoot)) {
+      _lastError = 'The selected game is outside the linked DolphiniOS Software folder.';
+      return false;
+    }
+
+    final relativeGamePath = path
+        .relative(path.normalize(romPath), from: path.normalize(softwareRoot))
+        .replaceAll('\\', '/');
+    if (relativeGamePath.isEmpty ||
+        relativeGamePath == '.' ||
+        relativeGamePath == '..' ||
+        relativeGamePath.startsWith('../')) {
+      _lastError = 'NeoStation could not derive a safe DolphiniOS game path.';
+      return false;
+    }
+
     _lastError = null;
     await _writeDiagnostic(
-      'STATE: START\nBundle hint: $_bundleId\nScript: legacy.js\n',
+      'STATE: START\n'
+      'Bundle hint: $_bundleId\n'
+      'System: $system\n'
+      'Game: $relativeGamePath\n'
+      'Script: legacy.js\n',
     );
 
     try {
@@ -71,24 +111,40 @@ class StikJitDolphinService {
       final jit = await StikjitBridge.enableDolphinJit(
         pairingFilePath: pairingFile.path,
         bundleId: _bundleId,
+        gameRelativePath: relativeGamePath,
       );
 
       for (final message in jit.logs) {
         _log.d('StikJIT DolphiniOS: $message');
       }
+
+      final handoffOpened = jit.gameUrlOpened == true;
       await _appendDiagnostic(
         'STATE: DOLPHIN_DEBUGGER_ATTACHED\n'
         'PID: ${jit.pid}\n'
         'Detected bundle ID: ${jit.bundleId ?? 'unknown'}\n'
         'TXM: ${jit.txmPresent ?? 'unknown'}\n'
+        'Direct game handoff: ${handoffOpened ? 'opened' : 'failed'}\n'
+        'Game: $relativeGamePath\n'
         'Debugger attachment confirmed; the legacy breakpoint handshake continues asynchronously until Dolphin starts emulation.\n'
         'Native log:\n${jit.logs.join('\n')}\n',
       );
+
+      if (!handoffOpened) {
+        _lastError =
+            'DolphiniOS JIT is active, but the NeoStation direct-launch receiver was not available. Install the NeoStation-compatible DolphiniOS build.';
+        await _appendDiagnostic(
+          'STATE: DOLPHIN_GAME_HANDOFF_FAILED\nError: $_lastError\n',
+        );
+        return false;
+      }
+
+      await _appendDiagnostic('STATE: DOLPHIN_GAME_HANDOFF_OPENED\n');
       return true;
     } catch (error, stackTrace) {
       _lastError = error.toString();
       _log.e(
-        'StikJitDolphinService: integrated JIT failed: $error',
+        'StikJitDolphinService: integrated JIT/direct launch failed: $error',
         error: error,
         stackTrace: stackTrace,
       );
