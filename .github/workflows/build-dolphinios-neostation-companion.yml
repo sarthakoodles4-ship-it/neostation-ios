@@ -66,6 +66,7 @@ jobs:
           MAIN=dolphin-ios-upstream/Source/iOS/App/Common/main.m
           SCENE=dolphin-ios-upstream/Source/iOS/App/Common/MainDisplaySceneDelegate.swift
           SOFTWARE=dolphin-ios-upstream/Source/iOS/App/Common/UI/SoftwareList/SoftwareListViewController.mm
+          ICON=dolphin-ios-upstream/Source/iOS/App/DolphiniOS/Assets.xcassets/AppIconBeta.appiconset/diosyellowbeta.png
           plutil -lint "$PLIST"
           grep -q 'dolphinios-neostation' "$PLIST"
           grep -q -- '--neostation-game=' "$MAIN"
@@ -74,6 +75,7 @@ jobs:
           grep -q 'NeoStationPendingGameRelativePath' "$SCENE"
           grep -q 'launchPendingNeoStationGameIfPossible' "$SOFTWARE"
           grep -q 'EmulationBootTypeFile' "$SOFTWARE"
+          test -f "$ICON"
 
       - name: Archive non-jailbroken DolphiniOS
         working-directory: dolphin-ios-upstream
@@ -92,6 +94,8 @@ jobs:
             -scheme 'DiOS (NJB)' \
             DOL_PBID_ORGANIZATION_IDENTIFIER='me.oatmealdome' \
             DOL_BUILD_SOURCE='neostation-direct-launch' \
+            DOL_APP_ICON_ASSET_NAME='AppIconBeta' \
+            ASSETCATALOG_COMPILER_APPICON_NAME='AppIconBeta' \
             CODE_SIGNING_ALLOWED='NO' \
             CODE_SIGNING_REQUIRED='NO' \
             2>&1 | tee "$GITHUB_WORKSPACE/dolphinios-build.log"
