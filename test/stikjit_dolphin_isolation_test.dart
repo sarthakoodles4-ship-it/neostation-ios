@@ -9,6 +9,8 @@ void main() {
     ).readAsStringSync();
     expect(dartBridge, contains('neostation/stikjit_dolphin'));
     expect(dartBridge, contains('enableDolphinJit'));
+    expect(dartBridge, contains('gameRelativePath'));
+    expect(dartBridge, contains("data['gameUrlOpened']"));
 
     final nativeBridge = File(
       'packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift',
@@ -18,6 +20,10 @@ void main() {
     expect(nativeBridge, isNot(contains('script: .universal')));
     expect(nativeBridge, contains('STATE: DOLPHIN_JIT_ARMED'));
     expect(nativeBridge, contains('STATE: DOLPHIN_JIT_READY'));
+    expect(nativeBridge, contains('dolphinios-neostation'));
+    expect(nativeBridge, contains('gameRelativePath'));
+    expect(nativeBridge, contains('gameUrlOpened'));
+    expect(nativeBridge, contains('STATE: DOLPHIN_GAME_URL_OPENED'));
 
     final wrapper = File(
       'packages/stikjit_bridge/ios/Classes/NeoStationStikjitBridgePluginV2.swift',
@@ -60,6 +66,34 @@ void main() {
     );
   });
 
+  test('Dolphin selected game is handed off only after JIT attach', () {
+    final service = File(
+      'lib/services/stikjit_dolphin_service.dart',
+    ).readAsStringSync();
+    expect(service, contains('GameSessionManager.currentGame'));
+    expect(service, contains('GameSessionManager.currentGameSystem'));
+    expect(service, contains('DolphinIosFolderService.ownsRomPath'));
+    expect(service, contains('gameRelativePath: relativeGamePath'));
+    expect(service, contains('jit.gameUrlOpened == true'));
+    expect(service, contains('Install the NeoStation-compatible DolphiniOS build'));
+
+    final session = File(
+      'lib/services/game/game_session_manager.dart',
+    ).readAsStringSync();
+    expect(session, contains('get currentGameSystem => _currentGameSystem'));
+    expect(session, contains('get currentGame => _currentGame'));
+
+    final nativeBridge = File(
+      'packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift',
+    ).readAsStringSync();
+    final attachIndex = nativeBridge.indexOf('attachGate.wait(timeout: 20)');
+    final openIndex = nativeBridge.indexOf('Self.openGameInDolphin(');
+    expect(attachIndex, greaterThanOrEqualTo(0));
+    expect(openIndex, greaterThan(attachIndex));
+    expect(nativeBridge, contains('URLQueryItem(name: "path", value: relativePath)'));
+    expect(nativeBridge, contains('"gameUrlOpened": gameUrlOpened'));
+  });
+
   test('Dolphin guarded legacy script terminates dead debugger sessions', () {
     final script = File(
       'packages/stikjit_bridge/ios/Classes/DolphinLegacyScript.swift',
@@ -81,6 +115,7 @@ void main() {
     expect(nativeBridge, contains('JIT_PREPARATION:'));
     expect(nativeBridge, contains('STATE: DOLPHIN_JIT_TARGET_TERMINATED'));
     expect(nativeBridge, contains('STATE: DOLPHIN_JIT_BREAKPOINT_BLESSED'));
+    expect(nativeBridge, contains('STATE: DOLPHIN_GAME_URL_FAILED'));
     expect(nativeBridge, contains('diagnosticLock'));
   });
 
