@@ -63,10 +63,13 @@ jobs:
           set -euo pipefail
           python3 build-utils/patch_dolphinios_neostation_direct_launch.py dolphin-ios-upstream
           PLIST=dolphin-ios-upstream/Source/iOS/App/DolphiniOS/Info.plist
+          MAIN=dolphin-ios-upstream/Source/iOS/App/Common/main.m
           SCENE=dolphin-ios-upstream/Source/iOS/App/Common/MainDisplaySceneDelegate.swift
           SOFTWARE=dolphin-ios-upstream/Source/iOS/App/Common/UI/SoftwareList/SoftwareListViewController.mm
           plutil -lint "$PLIST"
           grep -q 'dolphinios-neostation' "$PLIST"
+          grep -q -- '--neostation-game=' "$MAIN"
+          grep -q 'NeoStationCapturePendingGame' "$MAIN"
           grep -q 'openURLContexts' "$SCENE"
           grep -q 'NeoStationPendingGameRelativePath' "$SCENE"
           grep -q 'launchPendingNeoStationGameIfPossible' "$SOFTWARE"
@@ -115,11 +118,13 @@ jobs:
           Upstream: https://github.com/OatmealDome/dolphin-ios
           Upstream commit: $UPSTREAM_COMMIT
           NeoStation modification source: build-utils/patch_dolphinios_neostation_direct_launch.py
-          Added private URL receiver: dolphinios-neostation://launch?path=<relative Software path>
+          Primary direct-launch handoff: --neostation-game=<relative Software path> injected before suspended launch
+          Secondary URL receiver: dolphinios-neostation://launch?path=<relative Software path>
           The IPA is unsigned and intended to be signed by the user's normal iOS sideloading workflow.
           EOF
 
       - name: Upload companion IPA and build log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_BASENAME }}
@@ -128,5 +133,5 @@ jobs:
             ${{ env.OUTPUT_BASENAME }}-SOURCE.txt
             build-utils/patch_dolphinios_neostation_direct_launch.py
             dolphinios-build.log
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
