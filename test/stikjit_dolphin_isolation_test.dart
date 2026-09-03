@@ -27,26 +27,40 @@ void main() {
     );
   });
 
-  test('Dolphin legacy handshake is asynchronous and cannot block Flutter launch', () {
+  test('Dolphin waits for real vAttach before Flutter can return', () {
     final nativeBridge = File(
       'packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift',
     ).readAsStringSync();
     expect(nativeBridge, contains('legacyQueue.async'));
+    expect(nativeBridge, contains('DolphinAttachGate'));
+    expect(nativeBridge, contains('attach_response = '));
+    expect(nativeBridge, contains('STATE: DOLPHIN_DEBUGGER_ATTACHED'));
+    expect(nativeBridge, contains('debuggerAttachTimeout'));
+    expect(nativeBridge, contains('debuggerAttachFailed'));
     expect(nativeBridge, contains('jitPending'));
     expect(nativeBridge, contains('backgroundTask: backgroundTask'));
-    expect(
-      nativeBridge,
-      contains('Returning here prevents NeoStation'),
-    );
+    expect(nativeBridge, contains('attachGate.wait(timeout: 20)'));
+    expect(nativeBridge, contains('Thread.sleep(forTimeInterval: 0.20)'));
 
     final service = File(
       'lib/services/stikjit_dolphin_service.dart',
     ).readAsStringSync();
-    expect(service, contains('STATE: DOLPHIN_JIT_ARMED'));
+    expect(service, contains('STATE: DOLPHIN_DEBUGGER_ATTACHED'));
+    expect(service, contains('Debugger attachment confirmed'));
     expect(
       service,
-      contains('handshake continues asynchronously'),
+      contains('legacy breakpoint handshake continues asynchronously'),
     );
+  });
+
+  test('Dolphin writes live native JIT diagnostics for black-screen triage', () {
+    final nativeBridge = File(
+      'packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift',
+    ).readAsStringSync();
+    expect(nativeBridge, contains('stikjit_dolphin_native_debug.txt'));
+    expect(nativeBridge, contains('JIT_PROGRESS:'));
+    expect(nativeBridge, contains('JIT_PREPARATION:'));
+    expect(nativeBridge, contains('diagnosticLock'));
   });
 
   test('DolphiniOS runtime discovers resign-safe bundle through installation proxy', () {
