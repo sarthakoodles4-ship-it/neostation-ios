@@ -11,11 +11,11 @@ import 'package:stikjit_bridge/stikjit_bridge.dart';
 
 /// Fourth isolated NeoStation StikJIT target, dedicated to DolphiniOS.
 ///
-/// NeoStation starts DolphiniOS suspended, waits until the guarded legacy
-/// StikJIT debugger is attached, and then opens the NeoStation direct-launch
-/// receiver with the selected ROM's path relative to Dolphin's `Software`
-/// directory. Keeping the path relative makes the handoff survive sideload
-/// resigning and app-container UUID changes.
+/// NeoStation derives the selected ROM path relative to Dolphin's `Software`
+/// directory and injects it into the suspended companion process before the
+/// debugger resumes it. Relative paths survive sideload resigning and app
+/// container UUID changes, while the native JIT session remains alive until
+/// DolphiniOS reaches the iOS 26/27 `brk #0x69` handshake during emulation.
 class StikJitDolphinService {
   StikJitDolphinService._();
 
@@ -30,7 +30,8 @@ class StikJitDolphinService {
   );
 
   // Only a discovery hint. Installation Proxy resolves the actual bundle ID so
-  // sideloaders are free to rewrite it.
+  // sideloaders are free to rewrite it. The native scorer prefers the
+  // NeoStation companion display name/private receiver over stock DolphiniOS.
   static const String _bundleId = String.fromEnvironment(
     'NEOSTATION_DOLPHIN_BUNDLE_ID',
     defaultValue: 'me.oatmealdome.DolphiniOS-njb',
@@ -81,6 +82,7 @@ class StikJitDolphinService {
       'Bundle hint: $_bundleId\n'
       'System: $system\n'
       'Game: $relativeGamePath\n'
+      'Handoff: suspended argv\n'
       'Script: legacy.js\n',
     );
 
@@ -118,28 +120,28 @@ class StikJitDolphinService {
         _log.d('StikJIT DolphiniOS: $message');
       }
 
-      final handoffOpened = jit.gameUrlOpened == true;
+      final handoffReady = jit.gameHandoffReady == true;
       await _appendDiagnostic(
         'STATE: DOLPHIN_DEBUGGER_ATTACHED\n'
         'PID: ${jit.pid}\n'
         'Detected bundle ID: ${jit.bundleId ?? 'unknown'}\n'
         'TXM: ${jit.txmPresent ?? 'unknown'}\n'
-        'Direct game handoff: ${handoffOpened ? 'opened' : 'failed'}\n'
+        'Direct game handoff: ${handoffReady ? 'queued in argv' : 'failed'}\n'
         'Game: $relativeGamePath\n'
         'Debugger attachment confirmed; the legacy breakpoint handshake continues asynchronously until Dolphin starts emulation.\n'
         'Native log:\n${jit.logs.join('\n')}\n',
       );
 
-      if (!handoffOpened) {
+      if (!handoffReady) {
         _lastError =
-            'DolphiniOS JIT is active, but the NeoStation direct-launch receiver was not available. Install the NeoStation-compatible DolphiniOS build.';
+            'DolphiniOS JIT is active, but the selected game was not queued for direct launch. Install the NeoStation-compatible DolphiniOS build.';
         await _appendDiagnostic(
           'STATE: DOLPHIN_GAME_HANDOFF_FAILED\nError: $_lastError\n',
         );
         return false;
       }
 
-      await _appendDiagnostic('STATE: DOLPHIN_GAME_HANDOFF_OPENED\n');
+      await _appendDiagnostic('STATE: DOLPHIN_GAME_HANDOFF_READY\n');
       return true;
     } catch (error, stackTrace) {
       _lastError = error.toString();
