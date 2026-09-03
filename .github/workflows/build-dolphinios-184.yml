@@ -1,4 +1,4 @@
-name: Build DolphiniOS 185 Direct Launch
+name: Build DolphiniOS 186 Direct Launch
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/build-dolphinios-184.yml'
       - 'build-utils/patch_dolphinios_neostation_direct_launch.py'
+      - 'build-utils/patch_dolphinios_neostation_autoboot_fix.py'
       - 'lib/services/game/game_session_manager.dart'
       - 'lib/services/stikjit_dolphin_service.dart'
       - 'packages/stikjit_bridge/lib/stikjit_bridge.dart'
@@ -27,8 +28,8 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     env:
-      BUILD_NUMBER: '185'
-      ARTIFACT_BASENAME: NeoStation-iOS-Build-185-DolphiniOS-Direct-Launch
+      BUILD_NUMBER: '186'
+      ARTIFACT_BASENAME: NeoStation-iOS-Build-186-DolphiniOS-AutoBoot
       SCREENSCRAPER_DEV_ID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
       SCREENSCRAPER_DEV_PASSWORD: ${{ secrets.SCREENSCRAPER_DEV_PASSWORD }}
 
@@ -61,12 +62,14 @@ jobs:
           SERVICE=lib/services/stikjit_dolphin_service.dart
           DART_BRIDGE=packages/stikjit_bridge/lib/stikjit_bridge.dart
           PATCHER=build-utils/patch_dolphinios_neostation_direct_launch.py
+          AUTOBOOT_PATCHER=build-utils/patch_dolphinios_neostation_autoboot_fix.py
           test -f "$DOLPHIN"
           test -f "$RUNTIME"
           test -f "$SCRIPT"
           test -f "$SERVICE"
           test -f "$DART_BRIDGE"
           test -f "$PATCHER"
+          test -f "$AUTOBOOT_PATCHER"
           grep -q 'script: .custom(dolphinLegacyScript)' "$DOLPHIN"
           grep -q 'DolphinLegacyScript.install' "$DOLPHIN"
           grep -q 'legacy.\\(launch.pid)' "$DOLPHIN"
@@ -97,6 +100,9 @@ jobs:
           grep -q -- '--neostation-game=' "$PATCHER"
           grep -q 'NeoStationCapturePendingGame' "$PATCHER"
           grep -q 'launchPendingNeoStationGameIfPossible' "$PATCHER"
+          grep -q 'NeoStation immediate cold-start launch' "$AUTOBOOT_PATCHER"
+          grep -q 'hasSuffix:expectedSuffix' "$AUTOBOOT_PATCHER"
+          grep -q 'filenameMatchCount == 1' "$AUTOBOOT_PATCHER"
           grep -q 'script: .universal' packages/stikjit_bridge/ios/Classes/StikjitBridgePlugin.swift
           grep -q 'script: .universal' packages/stikjit_bridge/ios/Classes/NeoStationStikjitBridgePlugin.swift
           grep -q 'script: .universal' packages/stikjit_bridge/ios/Classes/StikjitRpcs3BridgePlugin.swift
@@ -235,7 +241,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          STAGING=/tmp/neostation-dolphin-185
+          STAGING=/tmp/neostation-dolphin-186
           rm -rf "$STAGING"
           mkdir -p "$STAGING/Payload"
           cp -R build/ios/iphoneos/Runner.app "$STAGING/Payload/Runner.app"
