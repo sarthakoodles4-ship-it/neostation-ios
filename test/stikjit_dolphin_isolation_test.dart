@@ -119,7 +119,7 @@ void main() {
     expect(nativeBridge, contains('diagnosticLock'));
   });
 
-  test('DolphiniOS runtime discovers resign-safe bundle through installation proxy', () {
+  test('DolphiniOS runtime discovers resign-safe companion through installation proxy', () {
     final runtime = File(
       'packages/stikjit_bridge/ios/Classes/DolphinIdeviceRuntime.swift',
     ).readAsStringSync();
@@ -127,6 +127,9 @@ void main() {
     expect(runtime, contains('installation_proxy_get_apps'));
     expect(runtime.toLowerCase(), contains('dolphinios'));
     expect(runtime, contains('process_control_launch_app'));
+    expect(runtime, contains('dolphinios-neostation'));
+    expect(runtime, contains('hasNeoStationDirectLaunchScheme'));
+    expect(runtime, contains('nameLower.contains("neostation")'));
   });
 
   test('existing validated targets remain on universal script', () {
