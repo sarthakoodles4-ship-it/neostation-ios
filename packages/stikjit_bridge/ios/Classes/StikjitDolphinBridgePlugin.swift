@@ -7,10 +7,20 @@ import UIKit
 ///
 /// Do not route this through the MeloNX/ARMSX2/RPCS3 universal-script paths:
 /// current DolphiniOS uses the legacy `brk #0x69` handshake on TXM devices.
+///
+/// Unlike the other targets, the legacy Dolphin script can legitimately remain
+/// attached while the user is still on DolphiniOS' software list. The Flutter
+/// method therefore returns as soon as the target process is launched and the
+/// background JIT session has been armed. The blocking `enableJIT` call stays on
+/// its own queue until Dolphin starts emulation and reaches `brk #0x69`.
 public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
   private static let channelName = "neostation/stikjit_dolphin"
-  private static let jitQueue = DispatchQueue(
-    label: "com.neogamelab.neostation.stikjit.dolphin",
+  private static let launchQueue = DispatchQueue(
+    label: "com.neogamelab.neostation.stikjit.dolphin.launch",
+    qos: .userInitiated
+  )
+  private static let legacyQueue = DispatchQueue(
+    label: "com.neogamelab.neostation.stikjit.dolphin.legacy",
     qos: .userInitiated
   )
 
@@ -60,22 +70,31 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
     }
 
     let backgroundTask = DolphinStikJitBackgroundTask(
-      name: "DolphiniOS integrated JIT"
+      name: "DolphiniOS pending legacy JIT"
     )
 
-    Self.jitQueue.async {
+    Self.launchQueue.async {
       do {
-        let response = try Self.enableDolphinJit(
+        let response = try Self.armDolphinJit(
           pairingFilePath: pairingFilePath,
-          bundleIdHint: bundleIdHint
+          bundleIdHint: bundleIdHint,
+          backgroundTask: backgroundTask
         )
+
+        // Do not wait for legacy.js to see brk #0x69. That breakpoint only
+        // happens when the user (or a future direct-launch handoff) starts a
+        // game inside DolphiniOS. Returning here prevents NeoStation's
+        // "Launching game" overlay from waiting forever.
         DispatchQueue.main.async {
-          backgroundTask.end()
           result(response)
         }
       } catch {
+        backgroundTask.end()
+        Self.appendNativeDiagnostic([
+          "STATE: DOLPHIN_JIT_ARM_FAILED",
+          "Error: \(error.localizedDescription)",
+        ])
         DispatchQueue.main.async {
-          backgroundTask.end()
           result(
             FlutterError(
               code: "stikjit_dolphin_enable_failed",
@@ -89,9 +108,10 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
   }
 
   @available(iOS 17.4, *)
-  private static func enableDolphinJit(
+  private static func armDolphinJit(
     pairingFilePath: String,
-    bundleIdHint: String
+    bundleIdHint: String,
+    backgroundTask: DolphinStikJitBackgroundTask
   ) throws -> [String: Any] {
     let pairingFile = URL(fileURLWithPath: pairingFilePath)
     guard FileManager.default.isReadableFile(atPath: pairingFile.path) else {
@@ -115,18 +135,18 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
 
     let configuration = StikJIT.Configuration.default
     let ddiPaths = DDIPaths.default(in: stikRoot)
-    var logs = [String]()
-    logs.append(
+    var preparationLogs = [String]()
+    preparationLogs.append(
       "Preparing LocalDevVPN/RSD endpoint and Developer Disk Image for DolphiniOS."
     )
-    logs.append("DolphiniOS JIT script: legacy.js (brk #0x69).")
+    preparationLogs.append("DolphiniOS JIT script: legacy.js (brk #0x69).")
 
     let readiness = StikJIT.prepareDevice(
       pairingFile: pairingFile,
       paths: ddiPaths,
       configuration: configuration
     ) { stage in
-      logs.append(Self.preparationDescription(stage))
+      preparationLogs.append(Self.preparationDescription(stage))
     }
 
     let securityState: StikJIT.DeviceSecurityState
@@ -150,38 +170,84 @@ public final class StikjitDolphinBridgePlugin: NSObject, FlutterPlugin {
       deviceAddress: configuration.deviceAddress,
       rsdPort: configuration.rsdPort
     )
-    logs.append("Detected DolphiniOS bundle ID: \(launch.bundleId).")
-    logs.append("DolphiniOS launched suspended with PID \(launch.pid).")
-    logs.append(
-      "The legacy debugger script will remain attached until DolphiniOS reaches its JIT region handshake when emulation starts."
+
+    preparationLogs.append("Detected DolphiniOS bundle ID: \(launch.bundleId).")
+    preparationLogs.append("DolphiniOS launched suspended with PID \(launch.pid).")
+    preparationLogs.append("STATE: DOLPHIN_JIT_ARMED")
+    preparationLogs.append(
+      "legacy.js is running asynchronously and will finish when DolphiniOS starts emulation and reaches brk #0x69."
     )
 
-    try StikJIT.enableJIT(
-      targetPID: launch.pid,
-      pairingFile: pairingFile,
-      ddiPaths: ddiPaths,
-      configuration: configuration,
-      script: .legacy,
-      forceScript: false,
-      preparationProgress: { stage in
-        logs.append(Self.preparationDescription(stage))
-      },
-      progress: { message in
-        logs.append(message)
+    // Copy the preparation log before starting another queue. The session owns
+    // its own mutable array so the response returned to Flutter cannot race
+    // with progress callbacks from StikJIT.
+    let armedLogs = preparationLogs
+
+    Self.legacyQueue.async {
+      var sessionLogs = armedLogs
+      do {
+        try StikJIT.enableJIT(
+          targetPID: launch.pid,
+          pairingFile: pairingFile,
+          ddiPaths: ddiPaths,
+          configuration: configuration,
+          script: .legacy,
+          forceScript: false,
+          preparationProgress: { stage in
+            sessionLogs.append(Self.preparationDescription(stage))
+          },
+          progress: { message in
+            sessionLogs.append(message)
+          }
+        )
+        sessionLogs.append("STATE: DOLPHIN_JIT_READY")
+        sessionLogs.append(
+          "StikJIT legacy script completed the Dolphin breakpoint handshake and detached."
+        )
+        Self.appendNativeDiagnostic(sessionLogs)
+      } catch {
+        sessionLogs.append("STATE: DOLPHIN_JIT_BACKGROUND_FAILED")
+        sessionLogs.append("Error: \(error.localizedDescription)")
+        Self.appendNativeDiagnostic(sessionLogs)
       }
-    )
-    logs.append("STATE: DOLPHIN_JIT_READY")
-    logs.append("StikJIT legacy script completed and detached from DolphiniOS.")
+      backgroundTask.end()
+    }
 
     var response: [String: Any] = [
       "pid": Int(launch.pid),
       "bundleId": launch.bundleId,
-      "logs": logs,
+      "jitPending": true,
+      "logs": armedLogs,
     ]
     if let txmPresent = securityState.isTXMPresent {
       response["txmPresent"] = txmPresent
     }
     return response
+  }
+
+  private static func appendNativeDiagnostic(_ lines: [String]) {
+    do {
+      guard let documents = FileManager.default.urls(
+        for: .documentDirectory,
+        in: .userDomainMask
+      ).first else { return }
+      let file = documents.appendingPathComponent(
+        "stikjit_dolphin_native_debug.txt"
+      )
+      let stamp = ISO8601DateFormatter().string(from: Date())
+      let payload = "\n=== \(stamp) ===\n" + lines.joined(separator: "\n") + "\n"
+      let data = Data(payload.utf8)
+      if FileManager.default.fileExists(atPath: file.path) {
+        let handle = try FileHandle(forWritingTo: file)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+      } else {
+        try data.write(to: file, options: .atomic)
+      }
+    } catch {
+      // Diagnostics must never interfere with JIT acquisition.
+    }
   }
 
   @available(iOS 17.4, *)
