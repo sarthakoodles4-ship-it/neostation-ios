@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Patch pinned DolphiniOS source with NeoStation's direct-game receiver.
 
-The companion build intentionally changes only three existing upstream files:
+The companion build intentionally changes only four existing upstream files:
 - Info.plist: register the private `dolphinios-neostation` URL scheme and give
   the companion an explicit display name so JIT discovery cannot confuse it
   with a stock DolphiniOS install.
-- MainDisplaySceneDelegate.swift: receive cold/warm scene URLs and persist a
-  validated path relative to DolphiniOS/Documents/Software.
-- SoftwareListViewController.mm: resolve that relative path and boot it through
-  the same EmulationBootParameter path used by a normal software-list tap.
+- main.m: consume the `--neostation-game=` argument injected while the process
+  is still suspended and persist its validated Software-relative path.
+- MainDisplaySceneDelegate.swift: retain a URL-scheme receiver as a secondary
+  warm/cold launch path.
+- SoftwareListViewController.mm: resolve the pending relative path and boot it
+  through the same EmulationBootParameter path used by a normal software tap.
 
 No ROM content or proprietary assets are added by this patch.
 """
@@ -23,6 +25,7 @@ SCHEME = "dolphinios-neostation"
 PENDING_KEY = "NeoStationPendingGameRelativePath"
 NOTIFICATION = "NeoStationDolphinLaunch"
 DISPLAY_NAME = "DolphiniOS NeoStation"
+GAME_ARGUMENT_PREFIX = "--neostation-game="
 
 
 def fail(message: str) -> None:
@@ -61,6 +64,106 @@ def patch_info_plist(path: Path) -> None:
 
     with path.open("wb") as handle:
         plistlib.dump(data, handle, fmt=plistlib.FMT_XML, sort_keys=False)
+
+
+MAIN_ORIGINAL = '''// Copyright 2023 DolphiniOS Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#import <UIKit/UIKit.h>
+
+#import "JitManager+PTrace.h"
+#import "Swift.h"
+
+int main(int argc, char* argv[]) {
+  NSString* appDelegateClassName;
+  @autoreleasepool {
+    // Setup code that might create autoreleased objects goes here.
+    appDelegateClassName = NSStringFromClass([AppDelegate class]);
+    
+    // If this is a child process spawned by us, run ptrace now.
+    if (argc >= 2 && strncmp(argv[1], DOLJitPTraceChildProcessArgument, strlen(DOLJitPTraceChildProcessArgument)) == 0) {
+      [[JitManager shared] runPTraceStartupTasks];
+      
+      return 0;
+    }
+  }
+  
+  return UIApplicationMain(argc, argv, nil, appDelegateClassName);
+}
+'''
+
+MAIN_PATCHED = f'''// Copyright 2023 DolphiniOS Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#import <UIKit/UIKit.h>
+
+#import "JitManager+PTrace.h"
+#import "Swift.h"
+
+static NSString* const NeoStationGameArgumentPrefix = @"{GAME_ARGUMENT_PREFIX}";
+static NSString* const NeoStationPendingGameRelativePathKey = @"{PENDING_KEY}";
+
+static void NeoStationCapturePendingGame(int argc, char* argv[]) {{
+  for (int index = 1; index < argc; index++) {{
+    NSString* argument = [NSString stringWithUTF8String:argv[index]];
+    if (argument == nil || ![argument hasPrefix:NeoStationGameArgumentPrefix]) {{
+      continue;
+    }}
+
+    NSString* relativePath = [argument substringFromIndex:NeoStationGameArgumentPrefix.length];
+    relativePath = [[relativePath stringByReplacingOccurrencesOfString:@"\\\\"
+                                                            withString:@"/"]
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (relativePath.length == 0 || [relativePath hasPrefix:@"/"]) {{
+      return;
+    }}
+
+    for (NSString* component in [relativePath componentsSeparatedByString:@"/"]) {{
+      if (component.length == 0 ||
+          [component isEqualToString:@"."] ||
+          [component isEqualToString:@".."]) {{
+        return;
+      }}
+    }}
+
+    [[NSUserDefaults standardUserDefaults]
+        setObject:relativePath
+           forKey:NeoStationPendingGameRelativePathKey];
+    return;
+  }}
+}}
+
+int main(int argc, char* argv[]) {{
+  NSString* appDelegateClassName;
+  @autoreleasepool {{
+    // Setup code that might create autoreleased objects goes here.
+    appDelegateClassName = NSStringFromClass([AppDelegate class]);
+    
+    // If this is a child process spawned by us, run ptrace now.
+    if (argc >= 2 && strncmp(argv[1], DOLJitPTraceChildProcessArgument, strlen(DOLJitPTraceChildProcessArgument)) == 0) {{
+      [[JitManager shared] runPTraceStartupTasks];
+      
+      return 0;
+    }}
+
+    // NeoStation injects the selected ROM before launching this process
+    // suspended. Persist it before UIApplicationMain so the software list can
+    // consume it as soon as the debugger resumes the app.
+    NeoStationCapturePendingGame(argc, argv);
+  }}
+  
+  return UIApplicationMain(argc, argv, nil, appDelegateClassName);
+}}
+'''
+
+
+def patch_main(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    if GAME_ARGUMENT_PREFIX in text and PENDING_KEY in text:
+        return
+    if text != MAIN_ORIGINAL:
+        fail("main.m differs from pinned upstream source")
+    path.write_text(MAIN_PATCHED, encoding="utf-8")
 
 
 SCENE_ORIGINAL = '''// Copyright 2022 DolphiniOS Project
@@ -113,8 +216,6 @@ class MainDisplaySceneDelegate: UIResponder, UIWindowSceneDelegate {{
   func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {{
     MainSceneCoordinator.shared().mainScene = scene as? UIWindowScene
 
-    // Scene-based apps receive a cold-start URL here rather than through the
-    // legacy AppDelegate openURL callback.
     for context in connectionOptions.urlContexts {{
       handleNeoStationLaunchURL(context.url)
     }}
@@ -257,9 +358,6 @@ RELOAD_PATCHED = '''- (void)reloadGameFiles {
 }
 
 - (void)neoStationLaunchRequested:(NSNotification*)notification {
-  // Refresh once so cache-backed launches retain Dolphin's NKit and second-disc
-  // metadata. The pending relative path survives a cold launch until this view
-  // exists and the game cache is ready.
   [self reloadGameFiles];
 }
 
@@ -312,9 +410,6 @@ RELOAD_PATCHED = '''- (void)reloadGameFiles {
     return;
   }
 
-  // Prefer the normal software-list path. It automatically preserves NKit and
-  // multi-disc metadata and therefore behaves exactly like a user tapping the
-  // same title in DolphiniOS.
   for (GameFilePtrWrapper* wrapper in self->_gameFiles) {
     NSString* gamePath = [CppToFoundationString(wrapper.gameFile->GetFilePath())
         stringByStandardizingPath];
@@ -325,8 +420,6 @@ RELOAD_PATCHED = '''- (void)reloadGameFiles {
     }
   }
 
-  // A just-added image can be valid before Dolphin's cache has produced a
-  // GameFile wrapper. Boot it directly rather than dropping back to the menu.
   _bootParameter = [[EmulationBootParameter alloc] init];
   _bootParameter.bootType = EmulationBootTypeFile;
   _bootParameter.path = candidate;
@@ -342,24 +435,9 @@ def patch_software_list(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     if PENDING_KEY in text and "launchPendingNeoStationGameIfPossible" in text:
         return
-    text = replace_once(
-        text,
-        INTERFACE_ORIGINAL,
-        INTERFACE_PATCHED,
-        "SoftwareList interface",
-    )
-    text = replace_once(
-        text,
-        VIEW_DID_LOAD_ORIGINAL,
-        VIEW_DID_LOAD_PATCHED,
-        "SoftwareList viewDidLoad",
-    )
-    text = replace_once(
-        text,
-        RELOAD_ORIGINAL,
-        RELOAD_PATCHED,
-        "SoftwareList reloadGameFiles",
-    )
+    text = replace_once(text, INTERFACE_ORIGINAL, INTERFACE_PATCHED, "SoftwareList interface")
+    text = replace_once(text, VIEW_DID_LOAD_ORIGINAL, VIEW_DID_LOAD_PATCHED, "SoftwareList viewDidLoad")
+    text = replace_once(text, RELOAD_ORIGINAL, RELOAD_PATCHED, "SoftwareList reloadGameFiles")
     path.write_text(text, encoding="utf-8")
 
 
@@ -368,21 +446,23 @@ def main() -> None:
     root = root.resolve()
 
     info = root / "Source/iOS/App/DolphiniOS/Info.plist"
+    main_file = root / "Source/iOS/App/Common/main.m"
     scene = root / "Source/iOS/App/Common/MainDisplaySceneDelegate.swift"
     software = root / "Source/iOS/App/Common/UI/SoftwareList/SoftwareListViewController.mm"
 
-    for required in (info, scene, software):
+    for required in (info, main_file, scene, software):
         if not required.is_file():
             fail(f"missing upstream file: {required}")
 
     patch_info_plist(info)
+    patch_main(main_file)
     patch_scene_delegate(scene)
     patch_software_list(software)
 
     print("Patched DolphiniOS for NeoStation direct launch")
     print(f"  Display name: {DISPLAY_NAME}")
-    print(f"  URL scheme: {SCHEME}")
-    print("  Receiver: scene cold/warm URL contexts")
+    print(f"  Suspended argv: {GAME_ARGUMENT_PREFIX}<relative Software path>")
+    print(f"  Fallback URL scheme: {SCHEME}")
     print("  Boot target: Documents/Software/<validated relative path>")
 
 
