@@ -46,7 +46,7 @@ class StikJitDolphinService {
     try {
       File? pairingFile;
       if (await PairingFileService.hasStoredPairingFile()) {
-        pairingFile = PairingFileService.storedFile();
+        pairingFile = await PairingFileService.storedFile();
       } else {
         final imported = await PairingFileService.importFromPicker(
           dialogTitle: 'Select your pairing file for DolphiniOS StikJIT',
@@ -55,7 +55,8 @@ class StikJitDolphinService {
       }
 
       if (pairingFile == null || !await pairingFile.exists()) {
-        _lastError = 'A readable pairing file is required for DolphiniOS StikJIT.';
+        _lastError =
+            'A readable pairing file is required for DolphiniOS StikJIT.';
         await _appendDiagnostic('STATE: PAIRING_MISSING\nError: $_lastError\n');
         return false;
       }
