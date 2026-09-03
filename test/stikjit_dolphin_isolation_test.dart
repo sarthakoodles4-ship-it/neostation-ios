@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('DolphiniOS has a fourth isolated StikJIT channel using legacy script', () {
+  test('DolphiniOS has a fourth isolated StikJIT channel using guarded legacy handshake', () {
     final dartBridge = File(
       'packages/stikjit_bridge/lib/stikjit_bridge.dart',
     ).readAsStringSync();
@@ -13,7 +13,8 @@ void main() {
     final nativeBridge = File(
       'packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift',
     ).readAsStringSync();
-    expect(nativeBridge, contains('script: .legacy'));
+    expect(nativeBridge, contains('DolphinLegacyScript.install'));
+    expect(nativeBridge, contains('script: .custom(dolphinLegacyScript)'));
     expect(nativeBridge, isNot(contains('script: .universal')));
     expect(nativeBridge, contains('STATE: DOLPHIN_JIT_ARMED'));
     expect(nativeBridge, contains('STATE: DOLPHIN_JIT_READY'));
@@ -27,11 +28,17 @@ void main() {
     );
   });
 
-  test('Dolphin waits for real vAttach before Flutter can return', () {
+  test('Dolphin waits for real vAttach and isolates each target PID', () {
     final nativeBridge = File(
       'packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift',
     ).readAsStringSync();
-    expect(nativeBridge, contains('legacyQueue.async'));
+    expect(nativeBridge, contains('let jitQueue = DispatchQueue'));
+    expect(
+      nativeBridge,
+      contains('stikjit.dolphin.legacy.\\(launch.pid)'),
+    );
+    expect(nativeBridge, contains('jitQueue.async'));
+    expect(nativeBridge, isNot(contains('legacyQueue.async')));
     expect(nativeBridge, contains('DolphinAttachGate'));
     expect(nativeBridge, contains('attach_response = '));
     expect(nativeBridge, contains('STATE: DOLPHIN_DEBUGGER_ATTACHED'));
@@ -53,6 +60,18 @@ void main() {
     );
   });
 
+  test('Dolphin guarded legacy script terminates dead debugger sessions', () {
+    final script = File(
+      'packages/stikjit_bridge/ios/Classes/DolphinLegacyScript.swift',
+    ).readAsStringSync();
+    expect(script, contains('NEOSTATION_JIT_TARGET_EXITED'));
+    expect(script, contains('NEOSTATION_JIT_TARGET_SIGNALED'));
+    expect(script, contains('NEOSTATION_JIT_TARGET_DISCONNECTED'));
+    expect(script, contains('maxStopPackets = 64'));
+    expect(script, contains('NEOSTATION_DOLPHIN_JIT_READY'));
+    expect(script, contains("send_command('D')"));
+  });
+
   test('Dolphin writes live native JIT diagnostics for black-screen triage', () {
     final nativeBridge = File(
       'packages/stikjit_bridge/ios/Classes/StikjitDolphinBridgePlugin.swift',
@@ -60,6 +79,8 @@ void main() {
     expect(nativeBridge, contains('stikjit_dolphin_native_debug.txt'));
     expect(nativeBridge, contains('JIT_PROGRESS:'));
     expect(nativeBridge, contains('JIT_PREPARATION:'));
+    expect(nativeBridge, contains('STATE: DOLPHIN_JIT_TARGET_TERMINATED'));
+    expect(nativeBridge, contains('STATE: DOLPHIN_JIT_BREAKPOINT_BLESSED'));
     expect(nativeBridge, contains('diagnosticLock'));
   });
 
